@@ -55,11 +55,19 @@ Parameters:
     Description: >-
       (Optional) Advanced option to specify an
       existing EFS File System Id with an existing mount target in your subnet.
-      Leave blank to create a new EFS file system.
+      Leave blank to create a new EFS file system when EnableEFS is true.
     Type: String
     AllowedPattern: '(^fs-[0-9a-f]+)$|()$'
     Default: ''
     ConstraintDescription: Should be a Valid EFS File System Id, or blank
+
+  EnableEFS:
+    Description: Enable EFS file system (create new if EFSFileSystemId is blank)
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
   
   EFSMountPath:
     Description: EFS file-system mount directory path.
@@ -253,9 +261,14 @@ Conditions:
     - !Equals 
       - !Ref UbuntuAMIOverride
       - ''
-  CreateNewEFSFileSystem: !Equals 
-    - !Ref EFSFileSystemId
-    - ''
+  EfsEnabled: !Equals
+    - !Ref EnableEFS
+    - 'true'
+  CreateNewEFSFileSystem: !And
+    - !Condition EfsEnabled
+    - !Equals
+      - !Ref EFSFileSystemId
+      - ''
   FSxForLustreEnabled: !Equals 
     - !Ref FSxForLustre
     - 'enabled'
@@ -981,11 +994,21 @@ Resources:
             - !Ref AWS::Region
             - |+
 
+            - EFS_ENABLED=
+            - !If
+              - EfsEnabled
+              - "true"
+              - "false"
+            - |+
+
             - EFS_FS_ID=
-            - !If 
-              - CreateNewEFSFileSystem
-              - !Ref EFSFileSystem
-              - !Ref EFSFileSystemId
+            - !If
+              - EfsEnabled
+              - !If
+                - CreateNewEFSFileSystem
+                - !Ref EFSFileSystem
+                - !Ref EFSFileSystemId
+              - ''
             - |+
 
             - EFS_MOUNT_PATH=
@@ -1055,13 +1078,16 @@ Resources:
               cd ../ && rm -rf aws-efa-installer-1.32.0.tar.gz aws-efa-installer
               fi
 
-              # Create EFS  mount script
+              # Create EFS mount script
               cat >/usr/local/bin/mount-efs.sh <<EOL
               #!/bin/bash
-              mkdir -p $EFS_MOUNT_PATH
-              mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport $EFS_FS_ID.efs.$AWS_REGION.amazonaws.com:/ $EFS_MOUNT_PATH && \
-              mkdir -p $EFS_MOUNT_PATH/home && \
-              chown ubuntu:ubuntu $EFS_MOUNT_PATH/home
+              if [[ "$EFS_ENABLED"  == "true" ]]
+              then
+                mkdir -p $EFS_MOUNT_PATH
+                mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport $EFS_FS_ID.efs.$AWS_REGION.amazonaws.com:/ $EFS_MOUNT_PATH && \
+                mkdir -p $EFS_MOUNT_PATH/home && \
+                chown ubuntu:ubuntu $EFS_MOUNT_PATH/home
+              fi
               EOL
               chmod u+x /usr/local/bin/mount-efs.sh
               /usr/local/bin/mount-efs.sh   
@@ -1186,6 +1212,7 @@ Outputs:
     Export:
       Name: !Sub '${AWS::StackName}-SecurityGroupId'
   EfsId:
+    Condition: EfsEnabled
     Description: EFS file system attached to the desktop
     Value: !If
       - CreateNewEFSFileSystem
@@ -1194,6 +1221,7 @@ Outputs:
     Export:
       Name: !Sub '${AWS::StackName}-EfsId'
   EfsMountPath:
+    Condition: EfsEnabled
     Description: EFS file system mount path
     Value: !Ref EFSMountPath
     Export:

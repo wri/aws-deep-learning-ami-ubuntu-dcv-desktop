@@ -206,7 +206,8 @@ Delete CloudFormation stacks from the AWS console when no longer needed.
 | DesktopVpcId | **Required**. Amazon VPC id. |
 | DesktopVpcSubnetId | **Required**. Amazon VPC subnet. Must be public with Internet Gateway (for Internet access) or private with NAT gateway. |
 | EBSOptimized | **Required**. Enable [network optimization for EBS](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-optimized.html) (default is **true**). |
-| EFSFileSystemId | *Optional* advanced parameter. Existing EFS file-system id with [network mount target](https://docs.aws.amazon.com/efs/latest/ug/how-it-works.html#how-it-works-ec2) accessible from DesktopVpcSubnetId. Use with DesktopSecurityGroupId. Leave blank to create new. |
+| EnableEFS | *Optional*. Enable EFS file-system (default is **false**). When enabled, creates a new file-system unless `EFSFileSystemId` is provided. |
+| EFSFileSystemId | *Optional* advanced parameter. Existing EFS file-system id with [network mount target](https://docs.aws.amazon.com/efs/latest/ug/how-it-works.html#how-it-works-ec2) accessible from DesktopVpcSubnetId. Use with DesktopSecurityGroupId. Leave blank to create new when `EnableEFS` is **true**. |
 | EFSMountPath | Absolute path where EFS file-system is mounted (default is `/home/ubuntu/efs`). |
 | EbsVolumeSize | **Required**. Size of EBS volume (default is 500 GB). |
 | EbsVolumeType | **Required**. [EBS volume type](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-volume-types.html) (default is gp3). |
@@ -225,4 +226,3 @@ See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more inform
 ## License
 
 This project is licensed under the MIT-0 [License](./LICENSE).
-

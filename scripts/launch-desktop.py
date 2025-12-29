@@ -247,6 +247,12 @@ def main(stack_name, template, region, profile, dry_run):
         public_ip_default,
     )
 
+    enable_efs_default = defaults.get("EnableEFS", "false")
+    enable_efs = prompt_optional_choice(
+        "Enable EFS (EnableEFS)",
+        allowed.get("EnableEFS"),
+        enable_efs_default,
+    )
 
     ebs_default = defaults.get("EbsVolumeSize", "64")
     ebs_value = questionary.text(
@@ -293,6 +299,8 @@ def main(stack_name, template, region, profile, dry_run):
         parameters.append(f"ParameterKey=DesktopInstanceType,ParameterValue={instance_type}")
     if public_ip:
         parameters.append(f"ParameterKey=DesktopHasPublicIpAddress,ParameterValue={public_ip}")
+    if enable_efs:
+        parameters.append(f"ParameterKey=EnableEFS,ParameterValue={enable_efs}")
 
     cmd = [
         "aws",
