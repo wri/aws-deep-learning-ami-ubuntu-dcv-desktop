@@ -40,10 +40,10 @@ Parameters:
      - "true"
      - "false"
   EbsVolumeSize:
-    Default: 1000
+    Default: 64
     Description: Ebs volume size (GB)
     Type: Number
-    MinValue: 1000
+    MinValue: 32
   EbsVolumeType:
     Default: 'gp3'
     Description: Ebs volume type
