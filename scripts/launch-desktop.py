@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env uv run
 # /// script
 # requires-python = ">=3.9"
 # dependencies = ["click>=8.1.0", "questionary>=2.0.1"]
@@ -290,7 +290,21 @@ def confirm(prompt):
 @click.option("--region", help="AWS region (overrides AWS config).")
 @click.option("--profile", help="AWS CLI profile to use.")
 @click.option("--dry-run", is_flag=True, help="Print command only.")
-def main(stack_name, template, region, profile, dry_run):
+@click.option("--vpc-id", help="VPC ID (skip prompt).")
+@click.option("--subnet-id", help="Subnet ID (skip prompt).")
+@click.option("--key-name", help="EC2 key pair name (skip prompt).")
+@click.option("--s3-bucket", help="S3 bucket name (skip prompt).")
+@click.option("--desktop-access-cidr", help="Desktop access CIDR (skip prompt).")
+@click.option("--security-group-id", help="Security group ID (skip prompt).")
+@click.option("--ami-type", help="AMI type (AWSUbuntuAMIType, skip prompt).")
+@click.option("--instance-type", help="Instance type (DesktopInstanceType, skip prompt).")
+@click.option("--public-ip", help="Desktop has public IP (DesktopHasPublicIpAddress, skip prompt).")
+@click.option("--enable-efs", help="Enable EFS (EnableEFS, skip prompt).")
+@click.option("--ebs-size", help="EBS volume size in GB (EbsVolumeSize, skip prompt).")
+@click.option("--ubuntu-ami-override", help="Ubuntu AMI override (leave blank or omit to use default AMI).")
+def main(stack_name_suffix, template, region, profile, dry_run, vpc_id, subnet_id, key_name, s3_bucket, 
+         desktop_access_cidr, security_group_id, ami_type, instance_type, public_ip, enable_efs, 
+         ebs_size, ubuntu_ami_override):
     """Interactive launcher for deep-learning-ubuntu-desktop CloudFormation stack."""
 
     # Build stack name
@@ -324,71 +338,100 @@ def main(stack_name, template, region, profile, dry_run):
         print(f"Using stack name: {stack_name}")
 
     # Check if stack already exists
-    stack_status, instance_id, key_name = get_stack_info(stack_name, region, profile)
+    stack_status, instance_id, key_name_from_stack = get_stack_info(stack_name, region, profile)
     
     if stack_status:
         print(f"⚠️  Stack '{stack_name}' already exists with status: {stack_status}")
         
         if stack_status in ["CREATE_COMPLETE", "UPDATE_COMPLETE"]:
-            display_instance_info(instance_id, key_name, region, profile, is_new_stack=False)
+            display_instance_info(instance_id, key_name_from_stack, region, profile, is_new_stack=False)
             return 0
         else:
             print(f"❌ Stack exists but is in state '{stack_status}'. Cannot proceed with creation.")
             return 1
 
-    # Parse template and get AWS resources
+    # Parse template
     defaults, allowed = parse_template_options(template)
-    vpcs, keypairs, buckets = get_aws_resources(region, profile)
 
-    # Interactive prompts
-    vpc = select_from_list(vpcs, "VPCs", 
-        formatter=lambda v: f"{v.get('Id')}  {v.get('Cidr')}  {v.get('Name') or ''}".strip())
-    vpc_id = vpc if isinstance(vpc, str) else vpc.get("Id")
+    # Interactive prompts (only if not provided via command line)
+    if not vpc_id:
+        vpcs, keypairs, buckets = get_aws_resources(region, profile)
+        vpc = select_from_list(vpcs, "VPCs", 
+            formatter=lambda v: f"{v.get('Id')}  {v.get('Cidr')}  {v.get('Name') or ''}".strip())
+        vpc_id = vpc if isinstance(vpc, str) else vpc.get("Id")
 
-    subnets = get_subnets_for_vpc(vpc_id, region, profile)
-    subnet = select_from_list(subnets, "subnets",
-        formatter=lambda s: f"{s.get('Id')}  {s.get('Cidr')}  {s.get('Az')}  public={s.get('Public')}  {s.get('Name') or ''}".strip())
-    subnet_id = subnet if isinstance(subnet, str) else subnet.get("Id")
+    if not subnet_id:
+        subnets = get_subnets_for_vpc(vpc_id, region, profile)
+        subnet = select_from_list(subnets, "subnets",
+            formatter=lambda s: f"{s.get('Id')}  {s.get('Cidr')}  {s.get('Az')}  public={s.get('Public')}  {s.get('Name') or ''}".strip())
+        subnet_id = subnet if isinstance(subnet, str) else subnet.get("Id")
 
-    key_name = select_from_list(keypairs, "EC2 key pairs")
-    s3_bucket = select_from_list(buckets, "S3 buckets")
+    if not key_name:
+        if 'keypairs' not in locals():
+            _, keypairs, _ = get_aws_resources(region, profile)
+        key_name = select_from_list(keypairs, "EC2 key pairs")
+        
+    if not s3_bucket:
+        if 'buckets' not in locals():
+            _, _, buckets = get_aws_resources(region, profile)
+        s3_bucket = select_from_list(buckets, "S3 buckets")
+
+    if not security_group_id:
+        security_groups = get_security_groups_for_vpc(vpc_id, region, profile)
+        security_groups.insert(0, {"Id": "", "Name": "Auto-create new security group", "Description": "Let CloudFormation create a new security group"})
+        
+        security_group = select_from_list(security_groups, "security groups",
+            formatter=lambda sg: f"{sg.get('Id') or 'auto-create'}  {sg.get('Name')}  {sg.get('Description') or ''}".strip())
+        security_group_id = security_group if isinstance(security_group, str) else security_group.get("Id")
 
     # Get CIDR
-    default_cidr = get_public_cidr()
-    while True:
-        cidr = questionary.text("Desktop access CIDR (e.g. 1.2.3.4/32)", default=default_cidr or "").ask()
-        if cidr is None:
-            print("Cancelled.")
-            return 1
-        if cidr.strip():
-            cidr = cidr.strip()
-            break
+    if desktop_access_cidr:
+        cidr = desktop_access_cidr.strip()
+    else:
+        default_cidr = get_public_cidr()
+        while True:
+            cidr = questionary.text("Desktop access CIDR (e.g. 1.2.3.4/32)", default=default_cidr or "").ask()
+            if cidr is None:
+                print("Cancelled.")
+                return 1
+            if cidr.strip():
+                cidr = cidr.strip()
+                break
 
     # Optional parameters
-    ami_type = prompt_optional_choice("AMI type (AWSUbuntuAMIType)", 
-        allowed.get("AWSUbuntuAMIType"), defaults.get("AWSUbuntuAMIType"))
-    instance_type = prompt_optional_choice("Instance type (DesktopInstanceType)", 
-        allowed.get("DesktopInstanceType"), defaults.get("DesktopInstanceType"))
-    public_ip = prompt_optional_choice("Desktop has public IP (DesktopHasPublicIpAddress)", 
-        allowed.get("DesktopHasPublicIpAddress"), defaults.get("DesktopHasPublicIpAddress", "true"))
-    enable_efs = prompt_optional_choice("Enable EFS (EnableEFS)", 
-        allowed.get("EnableEFS"), defaults.get("EnableEFS", "false"))
+    if not ami_type:
+        ami_type = prompt_optional_choice("AMI type (AWSUbuntuAMIType)", 
+            allowed.get("AWSUbuntuAMIType"), defaults.get("AWSUbuntuAMIType"))
+    if not instance_type:
+        instance_type = prompt_optional_choice("Instance type (DesktopInstanceType)", 
+            allowed.get("DesktopInstanceType"), defaults.get("DesktopInstanceType"))
+    if not public_ip:
+        public_ip = prompt_optional_choice("Desktop has public IP (DesktopHasPublicIpAddress)", 
+            allowed.get("DesktopHasPublicIpAddress"), defaults.get("DesktopHasPublicIpAddress", "true"))
+    if not enable_efs:
+        enable_efs = prompt_optional_choice("Enable EFS (EnableEFS)", 
+            allowed.get("EnableEFS"), defaults.get("EnableEFS", "false"))
 
-    ebs_value = questionary.text("EBS volume size in GB (EbsVolumeSize)", 
-        default=str(defaults.get("EbsVolumeSize", "64"))).ask()
-    if ebs_value is None:
-        print("Cancelled.")
-        return 1
+    if ebs_size:
+        ebs_value = str(ebs_size)
+    else:
+        ebs_value = questionary.text("EBS volume size in GB (EbsVolumeSize)", 
+            default=str(defaults.get("EbsVolumeSize", "64"))).ask()
+        if ebs_value is None:
+            print("Cancelled.")
+            return 1
 
-    ubuntu_override = questionary.text("Ubuntu AMI override (leave blank to use default)", default="").ask()
-    if ubuntu_override is None:
-        print("Cancelled.")
-        return 1
-
-    security_group_id = questionary.text("Desktop security group ID (DesktopSecurityGroupId, leave blank to auto-create)", default="").ask()
-    if security_group_id is None:
-        print("Cancelled.")
-        return 1
+    # Determine if we're in non-interactive mode (all required options provided)
+    non_interactive = bool(vpc_id and subnet_id and key_name and s3_bucket and desktop_access_cidr)
+    
+    if ubuntu_ami_override is None and not non_interactive:
+        ubuntu_override = questionary.text("Ubuntu AMI override (leave blank to use default)", default="").ask()
+        if ubuntu_override is None:
+            print("Cancelled.")
+            return 1
+        ubuntu_override = ubuntu_override.strip()
+    else:
+        ubuntu_override = ubuntu_ami_override.strip() if ubuntu_ami_override else ""
 
     # Build parameters
     parameters = [
@@ -397,9 +440,9 @@ def main(stack_name, template, region, profile, dry_run):
         f"ParameterKey=DesktopVpcSubnetId,ParameterValue={subnet_id}",
         f"ParameterKey=DesktopAccessCIDR,ParameterValue={cidr}",
         f"ParameterKey=KeyName,ParameterValue={key_name}",
-        f"ParameterKey=UbuntuAMIOverride,ParameterValue={ubuntu_override.strip()}",
-        f"ParameterKey=EbsVolumeSize,ParameterValue={ebs_value.strip()}",
-        f"ParameterKey=DesktopSecurityGroupId,ParameterValue={security_group_id.strip()}",
+        f"ParameterKey=UbuntuAMIOverride,ParameterValue={ubuntu_override or ''}",
+        f"ParameterKey=EbsVolumeSize,ParameterValue={ebs_value}",
+        f"ParameterKey=DesktopSecurityGroupId,ParameterValue={security_group_id or ''}",
     ]
 
     # Add optional parameters
