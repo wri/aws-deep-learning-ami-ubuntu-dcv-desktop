@@ -331,6 +331,65 @@ def main(stack_name, template, region, profile, dry_run):
         return 1
 
     subprocess.check_call(cmd)
+    
+    print(f"\nStack '{stack_name}' creation initiated. Waiting for completion...")
+    
+    # Wait for stack completion
+    wait_cmd = [
+        "aws",
+        "cloudformation",
+        "wait",
+        "stack-create-complete",
+        "--stack-name",
+        stack_name,
+    ]
+    
+    if region:
+        wait_cmd += ["--region", region]
+    if profile:
+        wait_cmd += ["--profile", profile]
+    
+    try:
+        subprocess.check_call(wait_cmd)
+        print(f"✅ Stack '{stack_name}' created successfully!")
+        
+        # Get stack outputs
+        outputs_cmd = [
+            "aws",
+            "cloudformation",
+            "describe-stacks",
+            "--stack-name",
+            stack_name,
+            "--query",
+            "Stacks[0].Outputs",
+            "--output",
+            "json",
+        ]
+        
+        if region:
+            outputs_cmd += ["--region", region]
+        if profile:
+            outputs_cmd += ["--profile", profile]
+        
+        outputs_raw = subprocess.check_output(outputs_cmd, text=True)
+        outputs = json.loads(outputs_raw)
+        
+        # Find and print instance ID
+        instance_id = None
+        for output in outputs:
+            if output.get("OutputKey") == "InstanceId":
+                instance_id = output.get("OutputValue")
+                break
+        
+        if instance_id:
+            print(f"🖥️  Instance ID: {instance_id}")
+        else:
+            print("⚠️  Instance ID not found in stack outputs")
+            
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Stack creation failed or timed out: {e}")
+        return 1
+    
     return 0
 
 

@@ -1250,3 +1250,8 @@ Outputs:
       - 'disabled'
     Export:
       Name: !Sub '${AWS::StackName}-FsxMountPath'
+  InstanceId:
+    Description: EC2 Instance ID of the desktop
+    Value: !Ref DesktopInstance
+    Export:
+      Name: !Sub '${AWS::StackName}-InstanceId'
