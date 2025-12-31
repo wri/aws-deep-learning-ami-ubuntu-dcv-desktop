@@ -31,11 +31,14 @@ def run_aws(args, region=None, profile=None):
 def get_stack_info(stack_name, region=None, profile=None):
     """Get stack information and extract instance ID and key name."""
     try:
-        stack_raw = run_aws([
-            "cloudformation", "describe-stacks", 
-            "--stack-name", stack_name,
-            "--output", "json"
-        ], region, profile)
+        cmd = ["aws", "cloudformation", "describe-stacks", "--stack-name", stack_name, "--output", "json"]
+        if region:
+            cmd += ["--region", region]
+        if profile:
+            cmd += ["--profile", profile]
+        
+        # Use subprocess directly to avoid sys.exit() in run_aws
+        stack_raw = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True)
         
         stack_info = json.loads(stack_raw)
         stack_status = stack_info["Stacks"][0]["StackStatus"]
@@ -53,13 +56,17 @@ def get_stack_info(stack_name, region=None, profile=None):
         # Fallback: get instance ID from resources if not in outputs
         if not instance_id:
             try:
-                instance_id = run_aws([
-                    "cloudformation", "describe-stack-resource",
+                resource_cmd = ["aws", "cloudformation", "describe-stack-resource",
                     "--stack-name", stack_name,
                     "--logical-resource-id", "DesktopInstance",
                     "--query", "StackResourceDetail.PhysicalResourceId",
-                    "--output", "text"
-                ], region, profile).strip()
+                    "--output", "text"]
+                if region:
+                    resource_cmd += ["--region", region]
+                if profile:
+                    resource_cmd += ["--profile", profile]
+                
+                instance_id = subprocess.check_output(resource_cmd, stderr=subprocess.DEVNULL, text=True).strip()
             except subprocess.CalledProcessError:
                 pass
         
@@ -273,7 +280,7 @@ def confirm(prompt):
 
 
 @click.command()
-@click.option("--stack-name", default="deep-learning-ubuntu-desktop", show_default=True)
+@click.option("--stack-name-suffix", help="Stack name suffix (base: data-science-instance)")
 @click.option(
     "--template",
     default="deep-learning-ubuntu-desktop.yaml",
@@ -285,6 +292,36 @@ def confirm(prompt):
 @click.option("--dry-run", is_flag=True, help="Print command only.")
 def main(stack_name, template, region, profile, dry_run):
     """Interactive launcher for deep-learning-ubuntu-desktop CloudFormation stack."""
+
+    # Build stack name
+    base_name = "data-science-instance"
+    
+    if stack_name_suffix:
+        # Use command line suffix
+        stack_name = f"{base_name}-{stack_name_suffix}"
+        print(f"Using stack name: {stack_name}")
+    elif not vpc_id:  # If no command line options, do interactive stack naming
+        suffix = questionary.text(
+            f"Stack name suffix (base: {base_name})",
+            default="",
+            instruction="Leave blank for just the base name, or add a suffix like 'dev' or 'chris'"
+        ).ask()
+        
+        if suffix is None:
+            print("Cancelled.")
+            return 1
+        
+        # Build final stack name
+        if suffix.strip():
+            stack_name = f"{base_name}-{suffix.strip()}"
+        else:
+            stack_name = base_name
+        
+        print(f"Using stack name: {stack_name}")
+    else:
+        # Non-interactive mode without suffix, use base name
+        stack_name = base_name
+        print(f"Using stack name: {stack_name}")
 
     # Check if stack already exists
     stack_status, instance_id, key_name = get_stack_info(stack_name, region, profile)
