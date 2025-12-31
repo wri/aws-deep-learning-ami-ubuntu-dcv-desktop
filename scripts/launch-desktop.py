@@ -28,6 +28,87 @@ def run_aws(args, region=None, profile=None):
     return output
 
 
+def get_stack_info(stack_name, region=None, profile=None):
+    """Get stack information and extract instance ID and key name."""
+    try:
+        stack_raw = run_aws([
+            "cloudformation", "describe-stacks", 
+            "--stack-name", stack_name,
+            "--output", "json"
+        ], region, profile)
+        
+        stack_info = json.loads(stack_raw)
+        stack_status = stack_info["Stacks"][0]["StackStatus"]
+        outputs = stack_info["Stacks"][0].get("Outputs", [])
+        
+        # Extract instance ID and key name from outputs
+        instance_id = None
+        key_name = None
+        for output in outputs:
+            if output.get("OutputKey") == "InstanceId":
+                instance_id = output.get("OutputValue")
+            elif output.get("OutputKey") == "KeyPairName":
+                key_name = output.get("OutputValue")
+        
+        # Fallback: get instance ID from resources if not in outputs
+        if not instance_id:
+            try:
+                instance_id = run_aws([
+                    "cloudformation", "describe-stack-resource",
+                    "--stack-name", stack_name,
+                    "--logical-resource-id", "DesktopInstance",
+                    "--query", "StackResourceDetail.PhysicalResourceId",
+                    "--output", "text"
+                ], region, profile).strip()
+            except subprocess.CalledProcessError:
+                pass
+        
+        return stack_status, instance_id, key_name
+        
+    except subprocess.CalledProcessError:
+        return None, None, None
+
+
+def get_aws_resources(region=None, profile=None):
+    """Fetch all required AWS resources."""
+    # Get VPCs
+    vpcs_raw = run_aws([
+        "ec2", "describe-vpcs",
+        "--query", "Vpcs[].{Id:VpcId,Cidr:CidrBlock,Name:Tags[?Key=='Name']|[0].Value}",
+        "--output", "json"
+    ], region, profile)
+    vpcs = json.loads(vpcs_raw)
+    
+    # Get key pairs
+    keys_raw = run_aws([
+        "ec2", "describe-key-pairs",
+        "--query", "KeyPairs[].KeyName",
+        "--output", "json"
+    ], region, profile)
+    keypairs = json.loads(keys_raw)
+    
+    # Get S3 buckets
+    buckets_raw = run_aws([
+        "s3api", "list-buckets",
+        "--query", "Buckets[].Name",
+        "--output", "json"
+    ], region, profile)
+    buckets = json.loads(buckets_raw)
+    
+    return vpcs, keypairs, buckets
+
+
+def get_subnets_for_vpc(vpc_id, region=None, profile=None):
+    """Get subnets for a specific VPC."""
+    subnets_raw = run_aws([
+        "ec2", "describe-subnets",
+        "--filters", f"Name=vpc-id,Values={vpc_id}",
+        "--query", "Subnets[].{Id:SubnetId,Cidr:CidrBlock,Az:AvailabilityZone,Public:MapPublicIpOnLaunch,Name:Tags[?Key=='Name']|[0].Value}",
+        "--output", "json"
+    ], region, profile)
+    return json.loads(subnets_raw)
+
+
 def parse_template_options(template_path):
     if not os.path.exists(template_path):
         return {}, {}
@@ -199,240 +280,102 @@ def confirm(prompt):
 def main(stack_name, template, region, profile, dry_run):
     """Interactive launcher for deep-learning-ubuntu-desktop CloudFormation stack."""
 
-    # Check if stack already exists first, before any user interaction
-    try:
-        check_cmd = [
-            "aws",
-            "cloudformation",
-            "describe-stacks",
-            "--stack-name",
-            stack_name,
-        ]
-        if region:
-            check_cmd += ["--region", region]
-        if profile:
-            check_cmd += ["--profile", profile]
-        
-        existing_stack = subprocess.check_output(check_cmd, stderr=subprocess.DEVNULL, text=True)
-        stack_info = json.loads(existing_stack)
-        stack_status = stack_info["Stacks"][0]["StackStatus"]
-        
+    # Check if stack already exists
+    stack_status, instance_id, key_name = get_stack_info(stack_name, region, profile)
+    
+    if stack_status:
         print(f"⚠️  Stack '{stack_name}' already exists with status: {stack_status}")
         
         if stack_status in ["CREATE_COMPLETE", "UPDATE_COMPLETE"]:
-            # Stack exists and is in good state, get instance ID
-            outputs = stack_info["Stacks"][0].get("Outputs", [])
-            instance_id = None
-            key_name = None
-            
-            # Get instance ID and key name from outputs
-            for output in outputs:
-                if output.get("OutputKey") == "InstanceId":
-                    instance_id = output.get("OutputValue")
-                elif output.get("OutputKey") == "KeyPairName":
-                    key_name = output.get("OutputValue")
-            
-            # If not found in outputs, get from DesktopInstance resource (for old stacks)
-            if not instance_id:
-                try:
-                    resources_cmd = [
-                        "aws",
-                        "cloudformation",
-                        "describe-stack-resource",
-                        "--stack-name",
-                        stack_name,
-                        "--logical-resource-id",
-                        "DesktopInstance",
-                        "--query",
-                        "StackResourceDetail.PhysicalResourceId",
-                        "--output",
-                        "text",
-                    ]
-                    if region:
-                        resources_cmd += ["--region", region]
-                    if profile:
-                        resources_cmd += ["--profile", profile]
-                    
-                    instance_id = subprocess.check_output(resources_cmd, text=True).strip()
-                except subprocess.CalledProcessError:
-                    pass
-            
             display_instance_info(instance_id, key_name, region, profile)
             return 0
         else:
             print(f"❌ Stack exists but is in state '{stack_status}'. Cannot proceed with creation.")
             return 1
-            
-    except subprocess.CalledProcessError:
-        # Stack doesn't exist, proceed with creation
-        pass
 
+    # Parse template and get AWS resources
     defaults, allowed = parse_template_options(template)
+    vpcs, keypairs, buckets = get_aws_resources(region, profile)
 
-    vpcs_raw = run_aws(
-        [
-            "ec2",
-            "describe-vpcs",
-            "--query",
-            "Vpcs[].{Id:VpcId,Cidr:CidrBlock,Name:Tags[?Key=='Name']|[0].Value}",
-            "--output",
-            "json",
-        ],
-        region=region,
-        profile=profile,
-    )
-    vpcs = json.loads(vpcs_raw)
-    vpc = select_from_list(
-        vpcs,
-        "VPCs",
-        formatter=lambda v: f"{v.get('Id')}  {v.get('Cidr')}  {v.get('Name') or ''}".strip(),
-    )
+    # Interactive prompts
+    vpc = select_from_list(vpcs, "VPCs", 
+        formatter=lambda v: f"{v.get('Id')}  {v.get('Cidr')}  {v.get('Name') or ''}".strip())
     vpc_id = vpc if isinstance(vpc, str) else vpc.get("Id")
 
-    subnets_raw = run_aws(
-        [
-            "ec2",
-            "describe-subnets",
-            "--filters",
-            f"Name=vpc-id,Values={vpc_id}",
-            "--query",
-            "Subnets[].{Id:SubnetId,Cidr:CidrBlock,Az:AvailabilityZone,Public:MapPublicIpOnLaunch,Name:Tags[?Key=='Name']|[0].Value}",
-            "--output",
-            "json",
-        ],
-        region=region,
-        profile=profile,
-    )
-    subnets = json.loads(subnets_raw)
-    subnet = select_from_list(
-        subnets,
-        "subnets",
-        formatter=lambda s: (
-            f"{s.get('Id')}  {s.get('Cidr')}  {s.get('Az')}  "
-            f"public={s.get('Public')}  {s.get('Name') or ''}"
-        ).strip(),
-    )
+    subnets = get_subnets_for_vpc(vpc_id, region, profile)
+    subnet = select_from_list(subnets, "subnets",
+        formatter=lambda s: f"{s.get('Id')}  {s.get('Cidr')}  {s.get('Az')}  public={s.get('Public')}  {s.get('Name') or ''}".strip())
     subnet_id = subnet if isinstance(subnet, str) else subnet.get("Id")
 
-    keys_raw = run_aws(
-        [
-            "ec2",
-            "describe-key-pairs",
-            "--query",
-            "KeyPairs[].KeyName",
-            "--output",
-            "json",
-        ],
-        region=region,
-        profile=profile,
-    )
-    keypairs = json.loads(keys_raw)
     key_name = select_from_list(keypairs, "EC2 key pairs")
-
-    buckets_raw = run_aws(
-        ["s3api", "list-buckets", "--query", "Buckets[].Name", "--output", "json"],
-        region=region,
-        profile=profile,
-    )
-    buckets = json.loads(buckets_raw)
     s3_bucket = select_from_list(buckets, "S3 buckets")
 
+    # Get CIDR
     default_cidr = get_public_cidr()
-    cidr_prompt = "Desktop access CIDR (e.g. 1.2.3.4/32)"
     while True:
-        cidr = questionary.text(cidr_prompt, default=default_cidr or "").ask()
+        cidr = questionary.text("Desktop access CIDR (e.g. 1.2.3.4/32)", default=default_cidr or "").ask()
         if cidr is None:
             print("Cancelled.")
             return 1
-        cidr = cidr.strip()
-        if cidr:
+        if cidr.strip():
+            cidr = cidr.strip()
             break
 
-    ami_type = prompt_optional_choice(
-        "AMI type (AWSUbuntuAMIType)",
-        allowed.get("AWSUbuntuAMIType"),
-        defaults.get("AWSUbuntuAMIType"),
-    )
+    # Optional parameters
+    ami_type = prompt_optional_choice("AMI type (AWSUbuntuAMIType)", 
+        allowed.get("AWSUbuntuAMIType"), defaults.get("AWSUbuntuAMIType"))
+    instance_type = prompt_optional_choice("Instance type (DesktopInstanceType)", 
+        allowed.get("DesktopInstanceType"), defaults.get("DesktopInstanceType"))
+    public_ip = prompt_optional_choice("Desktop has public IP (DesktopHasPublicIpAddress)", 
+        allowed.get("DesktopHasPublicIpAddress"), defaults.get("DesktopHasPublicIpAddress", "true"))
+    enable_efs = prompt_optional_choice("Enable EFS (EnableEFS)", 
+        allowed.get("EnableEFS"), defaults.get("EnableEFS", "false"))
 
-    instance_type = prompt_optional_choice(
-        "Instance type (DesktopInstanceType)",
-        allowed.get("DesktopInstanceType"),
-        defaults.get("DesktopInstanceType"),
-    )
-
-    public_ip_default = defaults.get("DesktopHasPublicIpAddress", "true")
-    public_ip = prompt_optional_choice(
-        "Desktop has public IP (DesktopHasPublicIpAddress)",
-        allowed.get("DesktopHasPublicIpAddress"),
-        public_ip_default,
-    )
-
-    enable_efs_default = defaults.get("EnableEFS", "false")
-    enable_efs = prompt_optional_choice(
-        "Enable EFS (EnableEFS)",
-        allowed.get("EnableEFS"),
-        enable_efs_default,
-    )
-
-    ebs_default = defaults.get("EbsVolumeSize", "64")
-    ebs_value = questionary.text(
-        "EBS volume size in GB (EbsVolumeSize)",
-        default=str(ebs_default),
-    ).ask()
+    ebs_value = questionary.text("EBS volume size in GB (EbsVolumeSize)", 
+        default=str(defaults.get("EbsVolumeSize", "64"))).ask()
     if ebs_value is None:
         print("Cancelled.")
         return 1
-    ebs_value = ebs_value.strip()
 
-    ubuntu_override = questionary.text(
-        "Ubuntu AMI override (leave blank to use default)",
-        default="",
-    ).ask()
+    ubuntu_override = questionary.text("Ubuntu AMI override (leave blank to use default)", default="").ask()
     if ubuntu_override is None:
         print("Cancelled.")
         return 1
-    ubuntu_override = ubuntu_override.strip()
 
-    security_group_id = questionary.text(
-        "Desktop security group ID (DesktopSecurityGroupId, leave blank to auto-create)",
-        default="",
-    ).ask()
+    security_group_id = questionary.text("Desktop security group ID (DesktopSecurityGroupId, leave blank to auto-create)", default="").ask()
     if security_group_id is None:
         print("Cancelled.")
         return 1
-    security_group_id = security_group_id.strip()
 
+    # Build parameters
     parameters = [
         f"ParameterKey=S3Bucket,ParameterValue={s3_bucket}",
         f"ParameterKey=DesktopVpcId,ParameterValue={vpc_id}",
         f"ParameterKey=DesktopVpcSubnetId,ParameterValue={subnet_id}",
         f"ParameterKey=DesktopAccessCIDR,ParameterValue={cidr}",
         f"ParameterKey=KeyName,ParameterValue={key_name}",
-        f"ParameterKey=UbuntuAMIOverride,ParameterValue={ubuntu_override}",
-        f"ParameterKey=EbsVolumeSize,ParameterValue={ebs_value}",
-        f"ParameterKey=DesktopSecurityGroupId,ParameterValue={security_group_id}",
+        f"ParameterKey=UbuntuAMIOverride,ParameterValue={ubuntu_override.strip()}",
+        f"ParameterKey=EbsVolumeSize,ParameterValue={ebs_value.strip()}",
+        f"ParameterKey=DesktopSecurityGroupId,ParameterValue={security_group_id.strip()}",
     ]
 
-    if ami_type:
-        parameters.append(f"ParameterKey=AWSUbuntuAMIType,ParameterValue={ami_type}")
-    if instance_type:
-        parameters.append(f"ParameterKey=DesktopInstanceType,ParameterValue={instance_type}")
-    if public_ip:
-        parameters.append(f"ParameterKey=DesktopHasPublicIpAddress,ParameterValue={public_ip}")
-    if enable_efs:
-        parameters.append(f"ParameterKey=EnableEFS,ParameterValue={enable_efs}")
+    # Add optional parameters
+    for param_key, param_value in [
+        ("AWSUbuntuAMIType", ami_type),
+        ("DesktopInstanceType", instance_type), 
+        ("DesktopHasPublicIpAddress", public_ip),
+        ("EnableEFS", enable_efs)
+    ]:
+        if param_value:
+            parameters.append(f"ParameterKey={param_key},ParameterValue={param_value}")
 
+    # Build and display command
     cmd = [
-        "aws",
-        "cloudformation",
-        "create-stack",
-        "--stack-name",
-        stack_name,
-        "--template-body",
-        f"file://{template}",
-        "--capabilities",
-        "CAPABILITY_NAMED_IAM",
-        "--parameters",
+        "aws", "cloudformation", "create-stack",
+        "--stack-name", stack_name,
+        "--template-body", f"file://{template}",
+        "--capabilities", "CAPABILITY_NAMED_IAM",
+        "--parameters"
     ] + parameters
 
     if region:
@@ -450,20 +393,11 @@ def main(stack_name, template, region, profile, dry_run):
         print("Cancelled.")
         return 1
 
+    # Create stack and wait for completion
     subprocess.check_call(cmd)
-    
     print(f"\nStack '{stack_name}' creation initiated. Waiting for completion...")
     
-    # Wait for stack completion
-    wait_cmd = [
-        "aws",
-        "cloudformation",
-        "wait",
-        "stack-create-complete",
-        "--stack-name",
-        stack_name,
-    ]
-    
+    wait_cmd = ["aws", "cloudformation", "wait", "stack-create-complete", "--stack-name", stack_name]
     if region:
         wait_cmd += ["--region", region]
     if profile:
@@ -473,34 +407,8 @@ def main(stack_name, template, region, profile, dry_run):
         subprocess.check_call(wait_cmd)
         print(f"✅ Stack '{stack_name}' created successfully!")
         
-        # Get stack outputs
-        outputs_cmd = [
-            "aws",
-            "cloudformation",
-            "describe-stacks",
-            "--stack-name",
-            stack_name,
-            "--query",
-            "Stacks[0].Outputs",
-            "--output",
-            "json",
-        ]
-        
-        if region:
-            outputs_cmd += ["--region", region]
-        if profile:
-            outputs_cmd += ["--profile", profile]
-        
-        outputs_raw = subprocess.check_output(outputs_cmd, text=True)
-        outputs = json.loads(outputs_raw)
-        
-        # Find and print instance ID
-        instance_id = None
-        for output in outputs:
-            if output.get("OutputKey") == "InstanceId":
-                instance_id = output.get("OutputValue")
-                break
-        
+        # Get final stack info and display
+        _, instance_id, _ = get_stack_info(stack_name, region, profile)
         display_instance_info(instance_id, key_name, region, profile)
             
     except subprocess.CalledProcessError as e:
