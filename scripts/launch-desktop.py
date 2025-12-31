@@ -147,6 +147,75 @@ def confirm(prompt):
 def main(stack_name, template, region, profile, dry_run):
     """Interactive launcher for deep-learning-ubuntu-desktop CloudFormation stack."""
 
+    # Check if stack already exists first, before any user interaction
+    try:
+        check_cmd = [
+            "aws",
+            "cloudformation",
+            "describe-stacks",
+            "--stack-name",
+            stack_name,
+        ]
+        if region:
+            check_cmd += ["--region", region]
+        if profile:
+            check_cmd += ["--profile", profile]
+        
+        existing_stack = subprocess.check_output(check_cmd, stderr=subprocess.DEVNULL, text=True)
+        stack_info = json.loads(existing_stack)
+        stack_status = stack_info["Stacks"][0]["StackStatus"]
+        
+        print(f"⚠️  Stack '{stack_name}' already exists with status: {stack_status}")
+        
+        if stack_status in ["CREATE_COMPLETE", "UPDATE_COMPLETE"]:
+            # Stack exists and is in good state, get instance ID
+            outputs = stack_info["Stacks"][0].get("Outputs", [])
+            instance_id = None
+            
+            # First try to get from outputs (for new stacks)
+            for output in outputs:
+                if output.get("OutputKey") == "InstanceId":
+                    instance_id = output.get("OutputValue")
+                    break
+            
+            # If not found in outputs, get from DesktopInstance resource (for old stacks)
+            if not instance_id:
+                try:
+                    resources_cmd = [
+                        "aws",
+                        "cloudformation",
+                        "describe-stack-resource",
+                        "--stack-name",
+                        stack_name,
+                        "--logical-resource-id",
+                        "DesktopInstance",
+                        "--query",
+                        "StackResourceDetail.PhysicalResourceId",
+                        "--output",
+                        "text",
+                    ]
+                    if region:
+                        resources_cmd += ["--region", region]
+                    if profile:
+                        resources_cmd += ["--profile", profile]
+                    
+                    instance_id = subprocess.check_output(resources_cmd, text=True).strip()
+                except subprocess.CalledProcessError:
+                    pass
+            
+            if instance_id:
+                print(f"🖥️  Instance ID: {instance_id}")
+            else:
+                print("❌ Could not find DesktopInstance resource")
+            return 0
+        else:
+            print(f"❌ Stack exists but is in state '{stack_status}'. Cannot proceed with creation.")
+            return 1
+            
+    except subprocess.CalledProcessError:
+        # Stack doesn't exist, proceed with creation
+        pass
+
     defaults, allowed = parse_template_options(template)
 
     vpcs_raw = run_aws(
