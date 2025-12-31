@@ -209,7 +209,7 @@ def get_public_cidr():
     return None
 
 
-def display_instance_info(instance_id, key_name, region=None, profile=None):
+def display_instance_info(instance_id, key_name, region=None, profile=None, is_new_stack=False):
     """Display instance information including SSH and DCV connection details."""
     if not instance_id:
         print("❌ Could not find DesktopInstance resource")
@@ -257,6 +257,12 @@ def display_instance_info(instance_id, key_name, region=None, profile=None):
             print(f"🖥️  DCV Connection:")
             print(f"   https://{public_ip}:8443")
             
+            if is_new_stack:
+                print(f"")
+                print(f"⚠️  REMINDER: Change the default password on first login!")
+                print(f"   Default username: ubuntu")
+                print(f"   Run: sudo passwd ubuntu")
+            
     except subprocess.CalledProcessError:
         print("⚠️  Could not retrieve instance network information")
 
@@ -287,7 +293,7 @@ def main(stack_name, template, region, profile, dry_run):
         print(f"⚠️  Stack '{stack_name}' already exists with status: {stack_status}")
         
         if stack_status in ["CREATE_COMPLETE", "UPDATE_COMPLETE"]:
-            display_instance_info(instance_id, key_name, region, profile)
+            display_instance_info(instance_id, key_name, region, profile, is_new_stack=False)
             return 0
         else:
             print(f"❌ Stack exists but is in state '{stack_status}'. Cannot proceed with creation.")
@@ -409,7 +415,7 @@ def main(stack_name, template, region, profile, dry_run):
         
         # Get final stack info and display
         _, instance_id, _ = get_stack_info(stack_name, region, profile)
-        display_instance_info(instance_id, key_name, region, profile)
+        display_instance_info(instance_id, key_name, region, profile, is_new_stack=True)
             
     except subprocess.CalledProcessError as e:
         print(f"❌ Stack creation failed or timed out: {e}")
