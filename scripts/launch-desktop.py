@@ -302,9 +302,10 @@ def confirm(prompt):
 @click.option("--enable-efs", help="Enable EFS (EnableEFS, skip prompt).")
 @click.option("--ebs-size", help="EBS volume size in GB (EbsVolumeSize, skip prompt).")
 @click.option("--ubuntu-ami-override", help="Ubuntu AMI override (leave blank or omit to use default AMI).")
+@click.option("--slack-webhook-url", help="Slack webhook URL for completion notifications (optional).")
 def main(stack_name_suffix, template, region, profile, dry_run, vpc_id, subnet_id, key_name, s3_bucket, 
          desktop_access_cidr, security_group_id, ami_type, instance_type, public_ip, enable_efs, 
-         ebs_size, ubuntu_ami_override):
+         ebs_size, ubuntu_ami_override, slack_webhook_url):
     """Interactive launcher for deep-learning-ubuntu-desktop CloudFormation stack."""
 
     # Build stack name
@@ -443,6 +444,7 @@ def main(stack_name_suffix, template, region, profile, dry_run, vpc_id, subnet_i
         f"ParameterKey=UbuntuAMIOverride,ParameterValue={ubuntu_override or ''}",
         f"ParameterKey=EbsVolumeSize,ParameterValue={ebs_value}",
         f"ParameterKey=DesktopSecurityGroupId,ParameterValue={security_group_id or ''}",
+        f"ParameterKey=SlackWebhookUrl,ParameterValue={slack_webhook_url or ''}",
     ]
 
     # Add optional parameters

@@ -26,6 +26,14 @@ Parameters:
       Leave blank, if unsure.
     Type: String
     AllowedPattern: '(ami-[0-9a-z]{17})?'
+  
+  SlackWebhookUrl:
+    Description: >-
+      (Optional) Slack webhook URL to send notification when instance setup is complete.
+      Leave blank to skip Slack notifications.
+    Type: String
+    Default: ''
+    NoEcho: true
   DesktopVpcId:
     Description: Desktop VPC ID
     Type: 'AWS::EC2::VPC::Id'
@@ -743,7 +751,7 @@ Resources:
       KeyName: !Ref KeyName
       Tags: 
         - Key: "Name"
-          Value: !Sub '${AWS::StackName}-deep-learning-ubuntu-desktop'
+          Value: !Ref 'AWS::StackName'
       UserData: !Base64 
         'Fn::Join':
           - ''
@@ -783,6 +791,14 @@ Resources:
 
             - OVERRIDE_AMI=
             - !Ref UbuntuAMIOverride
+            - |+
+
+            - SLACK_WEBHOOK_URL=
+            - !Ref SlackWebhookUrl
+            - |+
+
+            - STACK_NAME=
+            - !Ref 'AWS::StackName'
             - |+
 
               if [[ -z "${OVERRIDE_AMI}" ]]; then
@@ -1174,6 +1190,18 @@ Resources:
 
               # install aws cli
               snap install aws-cli --classic
+              
+              # Send Slack notification if webhook URL is provided
+              if [[ ! -z "$SLACK_WEBHOOK_URL" ]]; then
+                # Get external IP address
+                IP_ADDRESS=$(curl -s https://api.ipify.org/ 2>/dev/null || echo "unknown")
+                
+                SLACK_MESSAGE="{\"text\": \"Data Science Instance setup completed for $IP_ADDRESS\"}"
+                
+                curl -X POST -H 'Content-type: application/json' \
+                  --data "$SLACK_MESSAGE" \
+                  "$SLACK_WEBHOOK_URL" || echo "Failed to send Slack notification"
+              fi
               
               echo "Deep Learning Desktop is Ready!" > /etc/motd
 Outputs:
