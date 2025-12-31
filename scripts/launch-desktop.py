@@ -128,6 +128,58 @@ def get_public_cidr():
     return None
 
 
+def display_instance_info(instance_id, key_name, region=None, profile=None):
+    """Display instance information including SSH and DCV connection details."""
+    if not instance_id:
+        print("❌ Could not find DesktopInstance resource")
+        return
+    
+    print(f"🖥️  Instance ID: {instance_id}")
+    
+    # Get instance details for SSH info
+    try:
+        instance_cmd = [
+            "aws",
+            "ec2",
+            "describe-instances",
+            "--instance-ids",
+            instance_id,
+            "--query",
+            "Reservations[0].Instances[0].{PublicIpAddress:PublicIpAddress,PrivateIpAddress:PrivateIpAddress,State:State.Name}",
+            "--output",
+            "json",
+        ]
+        if region:
+            instance_cmd += ["--region", region]
+        if profile:
+            instance_cmd += ["--profile", profile]
+        
+        instance_info = subprocess.check_output(instance_cmd, text=True)
+        instance_data = json.loads(instance_info)
+        
+        public_ip = instance_data.get("PublicIpAddress")
+        private_ip = instance_data.get("PrivateIpAddress")
+        state = instance_data.get("State")
+        
+        print(f"📡 Instance State: {state}")
+        print(f"🌐 Public IP: {public_ip or 'none'}")
+        print(f"🏠 Private IP: {private_ip}")
+        
+        if public_ip:
+            if key_name:
+                print(f"🔑 SSH Connection:")
+                print(f"   ssh -i ~/.ssh/{key_name}.pem ubuntu@{public_ip}")
+            else:
+                print(f"🔑 SSH Connection (replace KEY_NAME with your key):")
+                print(f"   ssh -i ~/.ssh/KEY_NAME.pem ubuntu@{public_ip}")
+            
+            print(f"🖥️  DCV Connection:")
+            print(f"   https://{public_ip}:8443")
+            
+    except subprocess.CalledProcessError:
+        print("⚠️  Could not retrieve instance network information")
+
+
 def confirm(prompt):
     value = questionary.confirm(prompt, default=False).ask()
     return bool(value)
@@ -171,12 +223,14 @@ def main(stack_name, template, region, profile, dry_run):
             # Stack exists and is in good state, get instance ID
             outputs = stack_info["Stacks"][0].get("Outputs", [])
             instance_id = None
+            key_name = None
             
-            # First try to get from outputs (for new stacks)
+            # Get instance ID and key name from outputs
             for output in outputs:
                 if output.get("OutputKey") == "InstanceId":
                     instance_id = output.get("OutputValue")
-                    break
+                elif output.get("OutputKey") == "KeyPairName":
+                    key_name = output.get("OutputValue")
             
             # If not found in outputs, get from DesktopInstance resource (for old stacks)
             if not instance_id:
@@ -203,10 +257,7 @@ def main(stack_name, template, region, profile, dry_run):
                 except subprocess.CalledProcessError:
                     pass
             
-            if instance_id:
-                print(f"🖥️  Instance ID: {instance_id}")
-            else:
-                print("❌ Could not find DesktopInstance resource")
+            display_instance_info(instance_id, key_name, region, profile)
             return 0
         else:
             print(f"❌ Stack exists but is in state '{stack_status}'. Cannot proceed with creation.")
@@ -450,10 +501,7 @@ def main(stack_name, template, region, profile, dry_run):
                 instance_id = output.get("OutputValue")
                 break
         
-        if instance_id:
-            print(f"🖥️  Instance ID: {instance_id}")
-        else:
-            print("⚠️  Instance ID not found in stack outputs")
+        display_instance_info(instance_id, key_name, region, profile)
             
     except subprocess.CalledProcessError as e:
         print(f"❌ Stack creation failed or timed out: {e}")
