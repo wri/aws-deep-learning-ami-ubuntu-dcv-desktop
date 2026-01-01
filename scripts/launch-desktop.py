@@ -1,7 +1,7 @@
 #!/usr/bin/env uv run
 # /// script
 # requires-python = ">=3.9"
-# dependencies = ["click>=8.1.0", "questionary>=2.0.1"]
+# dependencies = ["rich-click>=1.7.0", "questionary>=2.0.1", "rich>=13.0.0"]
 # ///
 import json
 import os
@@ -9,9 +9,23 @@ import re
 import subprocess
 import sys
 import urllib.request
-import click
+import rich_click as click
 import questionary
 from questionary import Choice
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+
+console = Console()
+
+# Configure rich-click
+click.rich_click.USE_RICH_MARKUP = True
+click.rich_click.USE_MARKDOWN = True
+click.rich_click.SHOW_ARGUMENTS = True
+click.rich_click.GROUP_ARGUMENTS_OPTIONS = True
+click.rich_click.STYLE_ERRORS_SUGGESTION = "magenta italic"
+click.rich_click.ERRORS_SUGGESTION = "Try running the '--help' flag for more information."
+click.rich_click.ERRORS_EPILOGUE = "To find out more, visit [link=https://github.com/your-repo]https://github.com/your-repo[/link]"
 
 
 def run_aws(args, region=None, profile=None):
@@ -24,6 +38,7 @@ def run_aws(args, region=None, profile=None):
         output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
     except subprocess.CalledProcessError as exc:
         print(exc.output.strip(), file=sys.stderr)
+        console.print(f"[red]AWS CLI Error:[/red] {exc.output.strip()}", file=sys.stderr)
         sys.exit(exc.returncode)
     return output
 
@@ -163,7 +178,7 @@ def select_from_list(items, label, formatter=None):
         while True:
             value = questionary.text(f"No {label} found. Enter {label} manually:").ask()
             if value is None:
-                print("Cancelled.")
+                console.print("[red]Cancelled.[/red]")
                 sys.exit(1)
             if value.strip():
                 return value.strip()
@@ -175,7 +190,7 @@ def select_from_list(items, label, formatter=None):
         use_shortcuts=True,
     ).ask()
     if selection is None:
-        print("Cancelled.")
+        console.print("[red]Cancelled.[/red]")
         sys.exit(1)
     return selection
 
@@ -190,7 +205,7 @@ def prompt_optional_choice(label, allowed_values, default_value):
         choices.append("Enter custom value")
         selection = questionary.select(prompt, choices=choices).ask()
         if selection is None:
-            print("Cancelled.")
+            console.print("[red]Cancelled.[/red]")
             sys.exit(1)
         if selection == "Enter custom value":
             value = questionary.text(f"{label} custom value:").ask()
@@ -219,10 +234,10 @@ def get_public_cidr():
 def display_instance_info(instance_id, key_name, region=None, profile=None, is_new_stack=False, password_set=False):
     """Display instance information including SSH and DCV connection details."""
     if not instance_id:
-        print("❌ Could not find DesktopInstance resource")
+        console.print("[red]❌ Could not find DesktopInstance resource[/red]")
         return
     
-    print(f"🖥️  Instance ID: {instance_id}")
+    console.print(f"[cyan]🖥️  Instance ID:[/cyan] {instance_id}")
     
     # Get instance details for SSH info
     try:
@@ -249,29 +264,33 @@ def display_instance_info(instance_id, key_name, region=None, profile=None, is_n
         private_ip = instance_data.get("PrivateIpAddress")
         state = instance_data.get("State")
         
-        print(f"📡 Instance State: {state}")
-        print(f"🌐 Public IP: {public_ip or 'none'}")
-        print(f"🏠 Private IP: {private_ip}")
+        console.print(f"[cyan]📡 Instance State:[/cyan] {state}")
+        console.print(f"[cyan]🌐 Public IP:[/cyan] {public_ip or 'none'}")
+        console.print(f"[cyan]🏠 Private IP:[/cyan] {private_ip}")
         
         if public_ip:
             if key_name:
-                print(f"🔑 SSH Connection:")
-                print(f"   ssh -i ~/.ssh/{key_name}.pem ubuntu@{public_ip}")
+                console.print(f"[green]🔑 SSH Connection:[/green]")
+                console.print(f"   [dim]ssh -i ~/.ssh/{key_name}.pem ubuntu@{public_ip}[/dim]")
             else:
-                print(f"🔑 SSH Connection (replace KEY_NAME with your key):")
-                print(f"   ssh -i ~/.ssh/KEY_NAME.pem ubuntu@{public_ip}")
+                console.print(f"[green]🔑 SSH Connection (replace KEY_NAME with your key):[/green]")
+                console.print(f"   [dim]ssh -i ~/.ssh/KEY_NAME.pem ubuntu@{public_ip}[/dim]")
             
-            print(f"🖥️  DCV Connection:")
-            print(f"   https://{public_ip}:8443")
+            console.print(f"[green]🖥️  DCV Connection:[/green]")
+            console.print(f"   [dim]https://{public_ip}:8443[/dim]")
             
             if is_new_stack and not password_set:
-                print(f"")
-                print(f"⚠️  REMINDER: Change the default password on first login!")
-                print(f"   Default username: ubuntu")
-                print(f"   Run: sudo passwd ubuntu")
+                console.print("")
+                console.print(Panel.fit(
+                    "[yellow]⚠️  REMINDER: Set password for DCV login!\n"
+                    "Default username: ubuntu\n"
+                    "Run: sudo passwd ubuntu[/yellow]",
+                    title="Password Required",
+                    border_style="yellow"
+                ))
             
     except subprocess.CalledProcessError:
-        print("⚠️  Could not retrieve instance network information")
+        console.print("[yellow]⚠️  Could not retrieve instance network information[/yellow]")
 
 
 def confirm(prompt):
@@ -309,7 +328,33 @@ def confirm(prompt):
 def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, subnet_id, key_name, s3_bucket, 
          desktop_access_cidr, security_group_id, ami_type, instance_type, public_ip, enable_efs, 
          ebs_size, ubuntu_ami_override, slack_webhook_url, user, ubuntu_password):
-    """Interactive launcher for deep-learning-ubuntu-desktop CloudFormation stack."""
+    """
+    🚀 **Interactive launcher for deep-learning-ubuntu-desktop CloudFormation stack.**
+    
+    This tool helps you create AWS EC2 instances configured for deep learning with:
+    
+    - **NVIDIA GPU support** with pre-installed drivers
+    - **NICE DCV** remote desktop access  
+    - **Pre-installed software**: VS Code, Kiro, Docker, Conda
+    - **Flexible networking**: Public or private subnet deployment
+    - **EFS integration** for shared storage (optional)
+    
+    **Quick Start:**
+    ```bash
+    uv run ./scripts/launch-desktop.py --stack-name-suffix myname
+    ```
+    
+    **Non-interactive mode:**
+    ```bash
+    uv run ./scripts/launch-desktop.py \\
+        --stack-name-suffix dev \\
+        --vpc-id vpc-12345 \\
+        --subnet-id subnet-67890 \\
+        --key-name my-key \\
+        --s3-bucket my-bucket \\
+        --desktop-access-cidr 1.2.3.4/32
+    ```
+    """
 
     # Build stack name
     base_name = "data-science-instance"
@@ -317,7 +362,7 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
     if stack_name_suffix:
         # Use command line suffix
         stack_name = f"{base_name}-{stack_name_suffix}"
-        print(f"Using stack name: {stack_name}")
+        console.print(f"[cyan]Using stack name:[/cyan] {stack_name}")
     elif not vpc_id:  # If no command line options, do interactive stack naming
         suffix = questionary.text(
             f"Stack name suffix (base: {base_name})",
@@ -326,7 +371,7 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
         ).ask()
         
         if suffix is None:
-            print("Cancelled.")
+            console.print("[red]Cancelled.[/red]")
             return 1
         
         # Build final stack name
@@ -335,23 +380,23 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
         else:
             stack_name = base_name
         
-        print(f"Using stack name: {stack_name}")
+        console.print(f"[cyan]Using stack name:[/cyan] {stack_name}")
     else:
         # Non-interactive mode without suffix, use base name
         stack_name = base_name
-        print(f"Using stack name: {stack_name}")
+        console.print(f"[cyan]Using stack name:[/cyan] {stack_name}")
 
     # Check if stack already exists
     stack_status, instance_id, key_name_from_stack = get_stack_info(stack_name, region, profile)
     
     if stack_status:
-        print(f"⚠️  Stack '{stack_name}' already exists with status: {stack_status}")
+        console.print(f"[yellow]⚠️  Stack '{stack_name}' already exists with status: {stack_status}[/yellow]")
         
         if stack_status in ["CREATE_COMPLETE", "UPDATE_COMPLETE"]:
             display_instance_info(instance_id, key_name_from_stack, region, profile, is_new_stack=False)
             return 0
         else:
-            print(f"❌ Stack exists but is in state '{stack_status}'. Cannot proceed with creation.")
+            console.print(f"[red]❌ Stack exists but is in state '{stack_status}'. Cannot proceed with creation.[/red]")
             return 1
 
     # Parse template
@@ -396,7 +441,7 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
         while True:
             cidr = questionary.text("Desktop access CIDR (e.g. 1.2.3.4/32)", default=default_cidr or "").ask()
             if cidr is None:
-                print("Cancelled.")
+                console.print("[red]Cancelled.[/red]")
                 return 1
             if cidr.strip():
                 cidr = cidr.strip()
@@ -422,7 +467,7 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
         ebs_value = questionary.text("EBS volume size in GB (EbsVolumeSize)", 
             default=str(defaults.get("EbsVolumeSize", "64"))).ask()
         if ebs_value is None:
-            print("Cancelled.")
+            console.print("[red]Cancelled.[/red]")
             return 1
 
     # Determine if we're in non-interactive mode (all required options provided)
@@ -431,7 +476,7 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
     if ubuntu_ami_override is None and not non_interactive:
         ubuntu_override = questionary.text("Ubuntu AMI override (leave blank to use default)", default="").ask()
         if ubuntu_override is None:
-            print("Cancelled.")
+            console.print("[red]Cancelled.[/red]")
             return 1
         ubuntu_override = ubuntu_override.strip()
     else:
@@ -477,19 +522,19 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
     if profile:
         cmd += ["--profile", profile]
 
-    print("\nCloudFormation command:")
-    print(" ".join(cmd))
+    console.print("\n[bold cyan]CloudFormation command:[/bold cyan]")
+    console.print(" ".join(cmd))
 
     if dry_run:
         return 0
 
     if not confirm("Create stack now?"):
-        print("Cancelled.")
+        console.print("[red]Cancelled.[/red]")
         return 1
 
     # Create stack and wait for completion
     subprocess.check_call(cmd)
-    print(f"\nStack '{stack_name}' creation initiated. Waiting for completion...")
+    console.print(f"\n[yellow]Stack '{stack_name}' creation initiated. Waiting for completion...[/yellow]")
     
     wait_cmd = ["aws", "cloudformation", "wait", "stack-create-complete", "--stack-name", stack_name]
     if region:
@@ -499,14 +544,15 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
     
     try:
         subprocess.check_call(wait_cmd)
-        print(f"✅ Stack '{stack_name}' created successfully!")
+        console.print(f"[green]✅ Stack '{stack_name}' created successfully![/green]")
         
         # Get final stack info and display
         _, instance_id, _ = get_stack_info(stack_name, region, profile)
-        display_instance_info(instance_id, key_name, region, profile, is_new_stack=True)
+        password_was_provided = 'ubuntu_password' in ctx.params and ctx.params['ubuntu_password'] is not None
+        display_instance_info(instance_id, key_name, region, profile, is_new_stack=True, password_set=password_was_provided)
             
     except subprocess.CalledProcessError as e:
-        print(f"❌ Stack creation failed or timed out: {e}")
+        console.print(f"[red]❌ Stack creation failed or timed out: {e}[/red]")
         return 1
     
     return 0
