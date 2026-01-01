@@ -34,6 +34,28 @@ Parameters:
     Type: String
     Default: ''
     NoEcho: true
+  
+  StackNameSuffix:
+    Description: >-
+      Stack name suffix used for hostname generation.
+      Leave blank if no suffix was used.
+    Type: String
+    Default: ''
+  
+  User:
+    Description: >-
+      Username for hostname generation (dsi-[suffix]-[user]).
+      Defaults to current AWS username if available.
+    Type: String
+    Default: ''
+  
+  UbuntuPassword:
+    Description: >-
+      Password for the ubuntu user. If not provided, password will remain unset.
+      Required for DCV login.
+    Type: String
+    Default: ''
+    NoEcho: true
   DesktopVpcId:
     Description: Desktop VPC ID
     Type: 'AWS::EC2::VPC::Id'
@@ -801,6 +823,18 @@ Resources:
             - !Ref 'AWS::StackName'
             - |+
 
+            - STACK_NAME_SUFFIX=
+            - !Ref StackNameSuffix
+            - |+
+
+            - USER=
+            - !Ref User
+            - |+
+
+            - UBUNTU_PASSWORD=
+            - !Ref UbuntuPassword
+            - |+
+
               if [[ -z "${OVERRIDE_AMI}" ]]; then
                 [[ ! -z $(lspci -v | grep NVIDIA) ]] && \
                 [[ ! -x "$(command -v nvidia-smi)" ]] && \
@@ -1204,6 +1238,27 @@ Resources:
               fi
               
               echo "Deep Learning Desktop is Ready!" > /etc/motd
+              
+              # Set hostname to dsi-[stack-name-suffix]-[user]
+              HOSTNAME="dsi"
+              if [[ ! -z "$STACK_NAME_SUFFIX" ]]; then
+                HOSTNAME="${HOSTNAME}-${STACK_NAME_SUFFIX}"
+              fi
+              if [[ ! -z "$USER" ]]; then
+                HOSTNAME="${HOSTNAME}-${USER}"
+              fi
+              
+              # Set the hostname
+              hostnamectl set-hostname "$HOSTNAME"
+              echo "127.0.0.1 $HOSTNAME" >> /etc/hosts
+              
+              # Set ubuntu user password if provided
+              if [[ ! -z "$UBUNTU_PASSWORD" ]]; then
+                echo "ubuntu:$UBUNTU_PASSWORD" | chpasswd
+                echo "Ubuntu user password has been set"
+              else
+                echo "No password provided for ubuntu user"
+              fi
 Outputs:
   Ami:
     Description: AMI

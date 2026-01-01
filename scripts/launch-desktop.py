@@ -216,7 +216,7 @@ def get_public_cidr():
     return None
 
 
-def display_instance_info(instance_id, key_name, region=None, profile=None, is_new_stack=False):
+def display_instance_info(instance_id, key_name, region=None, profile=None, is_new_stack=False, password_set=False):
     """Display instance information including SSH and DCV connection details."""
     if not instance_id:
         print("❌ Could not find DesktopInstance resource")
@@ -264,7 +264,7 @@ def display_instance_info(instance_id, key_name, region=None, profile=None, is_n
             print(f"🖥️  DCV Connection:")
             print(f"   https://{public_ip}:8443")
             
-            if is_new_stack:
+            if is_new_stack and not password_set:
                 print(f"")
                 print(f"⚠️  REMINDER: Change the default password on first login!")
                 print(f"   Default username: ubuntu")
@@ -303,9 +303,12 @@ def confirm(prompt):
 @click.option("--ebs-size", help="EBS volume size in GB (EbsVolumeSize, skip prompt).")
 @click.option("--ubuntu-ami-override", help="Ubuntu AMI override (leave blank or omit to use default AMI).")
 @click.option("--slack-webhook-url", help="Slack webhook URL for completion notifications (optional).")
-def main(stack_name_suffix, template, region, profile, dry_run, vpc_id, subnet_id, key_name, s3_bucket, 
+@click.option("--user", help="Username for hostname generation (optional).")
+@click.option("--ubuntu-password", help="Password for ubuntu user (required for DCV login).")
+@click.pass_context
+def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, subnet_id, key_name, s3_bucket, 
          desktop_access_cidr, security_group_id, ami_type, instance_type, public_ip, enable_efs, 
-         ebs_size, ubuntu_ami_override, slack_webhook_url):
+         ebs_size, ubuntu_ami_override, slack_webhook_url, user, ubuntu_password):
     """Interactive launcher for deep-learning-ubuntu-desktop CloudFormation stack."""
 
     # Build stack name
@@ -445,6 +448,9 @@ def main(stack_name_suffix, template, region, profile, dry_run, vpc_id, subnet_i
         f"ParameterKey=EbsVolumeSize,ParameterValue={ebs_value}",
         f"ParameterKey=DesktopSecurityGroupId,ParameterValue={security_group_id or ''}",
         f"ParameterKey=SlackWebhookUrl,ParameterValue={slack_webhook_url or ''}",
+        f"ParameterKey=StackNameSuffix,ParameterValue={stack_name_suffix or ''}",
+        f"ParameterKey=User,ParameterValue={user or ''}",
+        f"ParameterKey=UbuntuPassword,ParameterValue={ubuntu_password or ''}",
     ]
 
     # Add optional parameters
