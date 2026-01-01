@@ -1202,9 +1202,14 @@ Resources:
                 chown -R ubuntu:ubuntu /home/ubuntu/.conda
               fi
             
-              echo "conda activate" >> /home/ubuntu/.bashrc
+              # set python to python3 system-wide
+              apt-get -y install python-is-python3
+
               # install visual code 
               apt-get -y install code
+
+              # install uv system-wide
+              curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
 
               # install Kiro
               URL=$(curl -s https://prod.download.desktop.kiro.dev/stable/metadata-linux-x64-stable.json | jq -r '.releases[] | select(.updateTo.url | endswith(".tar.gz")) | .updateTo.url')
