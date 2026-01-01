@@ -458,7 +458,7 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
         suffix = questionary.text(
             f"Stack name suffix (base: {base_name})",
             default="",
-            instruction="Leave blank for just the base name, or add a suffix like 'dev' or 'chris'"
+            instruction="Leave blank for just the base name, or add a suffix like 'dev'"
         ).ask()
         
         if suffix is None:
