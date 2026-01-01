@@ -120,6 +120,96 @@ def get_aws_resources(region=None, profile=None):
     return vpcs, keypairs, buckets
 
 
+def update_stack_flow(ctx, stack_name, template, region, profile, dry_run, stack_status):
+    if not stack_status:
+        console.print(f"[red]❌ Stack '{stack_name}' does not exist. Cannot update.[/red]")
+        return 1
+    if stack_status not in ["CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE"]:
+        console.print(f"[red]❌ Stack exists but is in state '{stack_status}'. Cannot update.[/red]")
+        return 1
+
+    describe_cmd = ["aws", "cloudformation", "describe-stacks", "--stack-name", stack_name, "--output", "json"]
+    if region:
+        describe_cmd += ["--region", region]
+    if profile:
+        describe_cmd += ["--profile", profile]
+    try:
+        stack_raw = subprocess.check_output(describe_cmd, stderr=subprocess.STDOUT, text=True)
+    except subprocess.CalledProcessError as exc:
+        console.print(f"[red]❌ Failed to describe stack:[/red] {exc.output.strip()}")
+        return 1
+
+    try:
+        stack_info = json.loads(stack_raw)
+        stack_params = stack_info["Stacks"][0].get("Parameters", [])
+    except (KeyError, IndexError, json.JSONDecodeError) as exc:
+        console.print(f"[red]❌ Failed to parse stack parameters:[/red] {exc}")
+        return 1
+
+    parameters = []
+    for param in stack_params:
+        key = param.get("ParameterKey")
+        value = param.get("ParameterValue")
+        if not key:
+            continue
+        if value in (None, "****"):
+            parameters.append(f"ParameterKey={key},UsePreviousValue=true")
+        else:
+            parameters.append(f"ParameterKey={key},ParameterValue={value}")
+
+    cmd = [
+        "aws", "cloudformation", "update-stack",
+        "--stack-name", stack_name,
+        "--template-body", f"file://{template}",
+        "--capabilities", "CAPABILITY_NAMED_IAM",
+        "--parameters"
+    ] + parameters
+
+    if region:
+        cmd += ["--region", region]
+    if profile:
+        cmd += ["--profile", profile]
+
+    console.print("\n[bold cyan]CloudFormation command:[/bold cyan]")
+    console.print(" ".join(cmd))
+
+    if dry_run:
+        return 0
+
+    if not confirm("Update stack now?"):
+        console.print("[red]Cancelled.[/red]")
+        return 1
+
+    try:
+        subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
+    except subprocess.CalledProcessError as exc:
+        if "No updates are to be performed" in exc.output:
+            console.print("[yellow]No updates to apply.[/yellow]")
+            return 0
+        console.print(f"[red]❌ Stack update failed:[/red] {exc.output.strip()}")
+        return 1
+
+    console.print(f"\n[yellow]Stack '{stack_name}' update initiated. Waiting for completion...[/yellow]")
+    wait_cmd = ["aws", "cloudformation", "wait", "stack-update-complete", "--stack-name", stack_name]
+    if region:
+        wait_cmd += ["--region", region]
+    if profile:
+        wait_cmd += ["--profile", profile]
+
+    try:
+        subprocess.check_call(wait_cmd)
+        console.print(f"[green]✅ Stack '{stack_name}' updated successfully![/green]")
+        _, instance_id, _ = get_stack_info(stack_name, region, profile)
+        password_was_provided = 'ubuntu_password' in ctx.params and ctx.params['ubuntu_password'] is not None
+        _, instance_id, key_name = get_stack_info(stack_name, region, profile)
+        display_instance_info(instance_id, key_name, region, profile, is_new_stack=False, password_set=password_was_provided)
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]❌ Stack update failed or timed out: {e}[/red]")
+        return 1
+
+    return 0
+
+
 def get_subnets_for_vpc(vpc_id, region=None, profile=None):
     """Get subnets for a specific VPC."""
     subnets_raw = run_aws([
@@ -324,10 +414,11 @@ def confirm(prompt):
 @click.option("--slack-webhook-url", help="Slack webhook URL for completion notifications (optional).")
 @click.option("--user", help="Username for hostname generation (optional).")
 @click.option("--ubuntu-password", help="Password for ubuntu user (required for DCV login).")
+@click.option("--update-stack", is_flag=True, help="Update an existing stack instead of creating a new one.")
 @click.pass_context
-def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, subnet_id, key_name, s3_bucket, 
-         desktop_access_cidr, security_group_id, ami_type, instance_type, public_ip, enable_efs, 
-         ebs_size, ubuntu_ami_override, slack_webhook_url, user, ubuntu_password):
+def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, subnet_id, key_name, s3_bucket,
+         desktop_access_cidr, security_group_id, ami_type, instance_type, public_ip, enable_efs,
+         ebs_size, ubuntu_ami_override, slack_webhook_url, user, ubuntu_password, update_stack):
     """
     🚀 **Interactive launcher for deep-learning-ubuntu-desktop CloudFormation stack.**
     
@@ -388,16 +479,25 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
 
     # Check if stack already exists
     stack_status, instance_id, key_name_from_stack = get_stack_info(stack_name, region, profile)
-    
+
+    if update_stack:
+        return update_stack_flow(
+            ctx=ctx,
+            stack_name=stack_name,
+            template=template,
+            region=region,
+            profile=profile,
+            dry_run=dry_run,
+            stack_status=stack_status,
+        )
+
     if stack_status:
         console.print(f"[yellow]⚠️  Stack '{stack_name}' already exists with status: {stack_status}[/yellow]")
-        
         if stack_status in ["CREATE_COMPLETE", "UPDATE_COMPLETE"]:
             display_instance_info(instance_id, key_name_from_stack, region, profile, is_new_stack=False)
             return 0
-        else:
-            console.print(f"[red]❌ Stack exists but is in state '{stack_status}'. Cannot proceed with creation.[/red]")
-            return 1
+        console.print(f"[red]❌ Stack exists but is in state '{stack_status}'. Cannot proceed with creation.[/red]")
+        return 1
 
     # Parse template
     defaults, allowed = parse_template_options(template)
@@ -489,7 +589,7 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
         f"ParameterKey=DesktopVpcSubnetId,ParameterValue={subnet_id}",
         f"ParameterKey=DesktopAccessCIDR,ParameterValue={cidr}",
         f"ParameterKey=KeyName,ParameterValue={key_name}",
-        f"ParameterKey=UbuntuAMIOverride,ParameterValue={ubuntu_override or ''}",
+        f"ParameterKey=UbuntuAMIOverride,ParameterValue={ubuntu_override}",
         f"ParameterKey=EbsVolumeSize,ParameterValue={ebs_value}",
         f"ParameterKey=DesktopSecurityGroupId,ParameterValue={security_group_id or ''}",
         f"ParameterKey=SlackWebhookUrl,ParameterValue={slack_webhook_url or ''}",
