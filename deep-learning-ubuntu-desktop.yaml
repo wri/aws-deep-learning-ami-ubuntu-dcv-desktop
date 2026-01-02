@@ -26,6 +26,13 @@ Parameters:
       Leave blank, if unsure.
     Type: String
     AllowedPattern: '(ami-[0-9a-z]{17})?'
+
+  UserdataScriptUrl:
+    Description: >-
+      (Optional) URL for the userdata script executed by cloud-init.
+      Leave blank to use the default GitHub script.
+    Type: String
+    Default: 'https://raw.githubusercontent.com/wri/aws-deep-learning-ami-ubuntu-dcv-desktop/scripts/install-scripts/userdata.sh'
   
   SlackWebhookUrl:
     Description: >-
@@ -813,34 +820,20 @@ Resources:
                 log "$label end status=$rc duration=$((end-start))s"
                 return $rc
               }
-              export OVERRIDE_AMI=
-            - !Ref UbuntuAMIOverride
-            - |+
-
-              export SLACK_WEBHOOK_URL=
-            - !Ref SlackWebhookUrl
-            - |+
-
-              export STACK_NAME=
-            - !Ref 'AWS::StackName'
-            - |+
-
-              export STACK_NAME_SUFFIX=
-            - !Ref StackNameSuffix
-            - |+
-
-              export USER=
-            - !Ref User
-            - |+
-
-              export UBUNTU_PASSWORD=
-            - !Ref UbuntuPassword
+            - !Sub |
+                export OVERRIDE_AMI='${UbuntuAMIOverride}'
+                export USERDATA_SCRIPT_URL='${UserdataScriptUrl}'
+                export SLACK_WEBHOOK_URL='${SlackWebhookUrl}'
+                export STACK_NAME='${AWS::StackName}'
+                export STACK_NAME_SUFFIX='${StackNameSuffix}'
+                export USER='${User}'
+                export UBUNTU_PASSWORD='${UbuntuPassword}'
             - |+
               if ! command -v curl >/dev/null 2>&1; then
                 apt-get update
                 apt-get -y install curl
               fi
-              curl -fsSL https://raw.githubusercontent.com/wri/aws-deep-learning-ami-ubuntu-dcv-desktop/scripts/install-scripts/userdata.sh -o /usr/local/bin/userdata.sh
+              curl -fsSL "$USERDATA_SCRIPT_URL" -o /usr/local/bin/userdata.sh
               chmod +x /usr/local/bin/userdata.sh
               run_with_timing "userdata.sh" /usr/local/bin/userdata.sh || exit $?
 

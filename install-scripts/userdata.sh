@@ -298,43 +298,6 @@ echo "install DCV server complete"
 # install nfs-common
 apt-get -y install nfs-common
 
-
-- EfsEnabled
-- "true"
-- "false"
-
-- EfsEnabled
-- !If
-  - CreateNewEFSFileSystem
-  - !Ref EFSFileSystem
-  - !Ref EFSFileSystemId
-- ''
-
-
-
-
-
-- CreateNewSecurityGroup
-- !GetAtt DesktopSecurityGroup.GroupId
-- !Ref DesktopSecurityGroupId
-
-- FSxForLustreEnabled
-- "true"
-- "false"
-
-- FSxForLustreEnabled 
-- !Ref FSxFileSystem
-- ''
-
-- FSxForLustreEnabled 
-- !GetAtt FSxFileSystem.LustreMountName
-- ''
-
-- EfaEnabled 
-- "true"
-- "false"
-
-
 # Install EFA software, if Efa is enabled
 if [[ "$EFA_ENABLED"  == "true" ]]
 then
@@ -463,8 +426,6 @@ if [[ ! -z "$SLACK_WEBHOOK_URL" ]]; then
     "$SLACK_WEBHOOK_URL" || echo "Failed to send Slack notification"
 fi
 
-echo "Deep Learning Desktop is Ready!" > /etc/motd
-
 # Set hostname to dsi-[stack-name-suffix]-[user]
 HOSTNAME="dsi"
 if [[ ! -z "$STACK_NAME_SUFFIX" ]]; then
@@ -485,4 +446,6 @@ if [[ ! -z "$UBUNTU_PASSWORD" ]]; then
 else
   echo "No password provided for ubuntu user"
 fi
+
+echo "Deep Learning Desktop is Ready!" > /etc/motd
 
