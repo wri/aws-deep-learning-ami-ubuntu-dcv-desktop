@@ -114,6 +114,16 @@ Parameters:
     AllowedValues:
       - 'true'
       - 'false'
+
+  DesktopFlavor:
+    Description: Desktop package to install.
+    Type: String
+    Default: 'xfce4'
+    AllowedValues:
+      - 'ubuntu-desktop'
+      - 'ubuntu-desktop-minimal'
+      - 'xfce4'
+      - 'kubuntu-desktop'
   
   EFSMountPath:
     Description: EFS file-system mount directory path.
@@ -813,42 +823,12 @@ Resources:
               Content-Disposition: attachment; filename="userdata.txt"
               #!/bin/bash -xe
               echo "Cloud init in progress! Logs: /var/log/cloud-init-output.log" > /etc/motd
-              LOG_FILE=/home/ubuntu/userdata.log
-              log() {
-                local message=$1
-                local notify_slack=${2:-false}
-                printf "%s %s\n" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$message" >> "$LOG_FILE"
-                if [[ "${DEBUG:-false}" == "true" || "$notify_slack" == "true" ]]; then
-                  slack_notify "$message"
-                fi
-              }
-              slack_notify() {
-                local message=$1
-                if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
-                  curl -s -X POST -H 'Content-type: application/json' \
-                    --data "{\"text\":\"${message}\"}" \
-                    "$SLACK_WEBHOOK_URL" >/dev/null || true
-                fi
-              }
-              run_with_timing() {
-                local label=$1
-                shift
-                local start end rc
-                start=$(date +%s)
-                log "${STACK_NAME:-stack} ${label} start" "true"
-                set +e
-                "$@"
-                rc=$?
-                set -e
-                end=$(date +%s)
-                log "${STACK_NAME:-stack} ${label} end status=$rc duration=$((end-start))s" "true"
-                return $rc
-              }
             - !Sub |
                 export OVERRIDE_AMI='${UbuntuAMIOverride}'
                 export USERDATA_SCRIPT_URL='${UserdataScriptUrl}'
                 export SLACK_WEBHOOK_URL='${SlackWebhookUrl}'
                 export DEBUG='${Debug}'
+                export DESKTOP_FLAVOR='${DesktopFlavor}'
                 export STACK_NAME='${AWS::StackName}'
                 export STACK_NAME_SUFFIX='${StackNameSuffix}'
                 export USER='${User}'
@@ -860,7 +840,7 @@ Resources:
               fi
               curl -fsSL "$USERDATA_SCRIPT_URL" -o /usr/local/bin/userdata.sh
               chmod +x /usr/local/bin/userdata.sh
-              run_with_timing "userdata.sh" /usr/local/bin/userdata.sh || exit $?
+              /usr/local/bin/userdata.sh
 
 Outputs:
   Ami:

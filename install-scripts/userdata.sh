@@ -8,6 +8,43 @@ echo "Cloud init in progress! Logs: /var/log/cloud-init-output.log" > /etc/motd
 : "${STACK_NAME_SUFFIX:=}"
 : "${USER:=}"
 : "${UBUNTU_PASSWORD:=}"
+: "${DESKTOP_FLAVOR:=xfce4}"
+: "${DEBUG:=false}"
+
+LOG_FILE=/home/ubuntu/userdata.log
+slack_notify() {
+  local message=$1
+  if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+    curl -s -X POST -H 'Content-type: application/json' \
+      --data "{\"text\":\"${message}\"}" \
+      "$SLACK_WEBHOOK_URL" >/dev/null || true
+  fi
+}
+log() {
+  local message=$1
+  local notify_slack=${2:-false}
+  printf "%s %s\n" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$message" >> "$LOG_FILE"
+  if [[ "${DEBUG}" == "true" || "$notify_slack" == "true" ]]; then
+    slack_notify "$message"
+  fi
+}
+run_with_timing() {
+  local label=$1
+  shift
+  local start end rc
+  start=$(date +%s)
+  log "${STACK_NAME:-stack} ${label} start" "true"
+  set +e
+  "$@"
+  rc=$?
+  set -e
+  end=$(date +%s)
+  log "${STACK_NAME:-stack} ${label} end status=$rc duration=$((end-start))s" "true"
+  return $rc
+}
+
+SCRIPT_START=$(date +%s)
+log "${STACK_NAME:-stack} userdata.sh start" "true"
 
 . /etc/os-release
 
@@ -141,7 +178,26 @@ apt-get -y install gnupg2
 apt-get -y install openmpi-bin libopenmpi-dev 
 apt-get -y install protobuf-compiler
 
-apt-get -y install ubuntu-desktop
+cat >/usr/local/bin/install-desktop.sh <<'EOF'
+#!/bin/bash
+set -euo pipefail
+case "${DESKTOP_FLAVOR}" in
+  ubuntu-desktop|ubuntu-desktop-minimal|xfce4|kubuntu-desktop)
+    apt-get -y install "${DESKTOP_FLAVOR}"
+    ;;
+  *)
+    echo "Unknown desktop flavor: ${DESKTOP_FLAVOR}" >&2
+    exit 1
+    ;;
+esac
+EOF
+chmod +x /usr/local/bin/install-desktop.sh
+
+DESKTOP_START=$(date +%s)
+log "desktop-install start flavor=${DESKTOP_FLAVOR}"
+/usr/local/bin/install-desktop.sh
+DESKTOP_END=$(date +%s)
+log "desktop-install end duration=$((DESKTOP_END-DESKTOP_START))s"
 
 if [[ ! -x "$(command -v dcv)" ]]
 then
@@ -434,5 +490,8 @@ if [[ ! -z "$UBUNTU_PASSWORD" ]]; then
 else
   echo "No password provided for ubuntu user"
 fi
+
+SCRIPT_END=$(date +%s)
+log "${STACK_NAME:-stack} userdata.sh end status=0 duration=$((SCRIPT_END-SCRIPT_START))s" "true"
 
 echo "Deep Learning Desktop is Ready!" > /etc/motd

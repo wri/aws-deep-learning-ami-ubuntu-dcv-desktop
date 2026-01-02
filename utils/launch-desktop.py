@@ -416,6 +416,7 @@ def confirm(prompt):
 @click.option("--instance-type", help="Instance type (DesktopInstanceType, skip prompt).")
 @click.option("--public-ip", help="Desktop has public IP (DesktopHasPublicIpAddress, skip prompt).")
 @click.option("--enable-efs", help="Enable EFS (EnableEFS, skip prompt).")
+@click.option("--desktop-flavor", help="Desktop package to install (DesktopFlavor, skip prompt).")
 @click.option("--ebs-size", help="EBS volume size in GB (EbsVolumeSize, skip prompt).")
 @click.option("--ubuntu-ami-override", help="Ubuntu AMI override (leave blank or omit to use default AMI).")
 @click.option("--debug", is_flag=True, help="Enable debug mode (Debug).")
@@ -426,7 +427,7 @@ def confirm(prompt):
 @click.pass_context
 def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, subnet_id, key_name, s3_bucket, 
          desktop_access_cidr, security_group_id, ami_type, instance_type, public_ip, enable_efs, 
-         ebs_size, ubuntu_ami_override, debug, slack_webhook_url, user, ubuntu_password, dcv_file, update_stack):
+         desktop_flavor, ebs_size, ubuntu_ami_override, debug, slack_webhook_url, user, ubuntu_password, dcv_file, update_stack):
     """
     🚀 **Interactive launcher for deep-learning-ubuntu-desktop CloudFormation stack.**
     
@@ -568,6 +569,9 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
     if not enable_efs:
         enable_efs = prompt_optional_choice("Enable EFS (EnableEFS)", 
             allowed.get("EnableEFS"), defaults.get("EnableEFS", "false"))
+    if not desktop_flavor:
+        desktop_flavor = prompt_optional_choice("Desktop flavor (DesktopFlavor)",
+            allowed.get("DesktopFlavor"), defaults.get("DesktopFlavor", "xfce4"))
 
     if ebs_size:
         ebs_value = str(ebs_size)
@@ -601,6 +605,7 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
         f"ParameterKey=KeyName,ParameterValue={key_name}",
         f"ParameterKey=UbuntuAMIOverride,ParameterValue={ubuntu_override}",
         f"ParameterKey=Debug,ParameterValue={debug_value}",
+        f"ParameterKey=DesktopFlavor,ParameterValue={desktop_flavor}",
         f"ParameterKey=EbsVolumeSize,ParameterValue={ebs_value}",
         f"ParameterKey=DesktopSecurityGroupId,ParameterValue={security_group_id or ''}",
         f"ParameterKey=SlackWebhookUrl,ParameterValue={slack_webhook_url or ''}",
