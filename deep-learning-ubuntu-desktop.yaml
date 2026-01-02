@@ -33,6 +33,15 @@ Parameters:
       Leave blank to use the default GitHub script.
     Type: String
     Default: 'https://raw.githubusercontent.com/wri/aws-deep-learning-ami-ubuntu-dcv-desktop/scripts/install-scripts/userdata.sh'
+
+  Debug:
+    Description: >-
+      (Optional) Enable debug mode (sends all log() messages to Slack).
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
   
   SlackWebhookUrl:
     Description: >-
@@ -805,25 +814,41 @@ Resources:
               #!/bin/bash -xe
               echo "Cloud init in progress! Logs: /var/log/cloud-init-output.log" > /etc/motd
               LOG_FILE=/home/ubuntu/userdata.log
-              log() { printf "%s %s\n" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$*" >> "$LOG_FILE"; }
+              log() {
+                local message=$1
+                local notify_slack=${2:-false}
+                printf "%s %s\n" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$message" >> "$LOG_FILE"
+                if [[ "${DEBUG:-false}" == "true" || "$notify_slack" == "true" ]]; then
+                  slack_notify "$message"
+                fi
+              }
+              slack_notify() {
+                local message=$1
+                if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+                  curl -s -X POST -H 'Content-type: application/json' \
+                    --data "{\"text\":\"${message}\"}" \
+                    "$SLACK_WEBHOOK_URL" >/dev/null || true
+                fi
+              }
               run_with_timing() {
                 local label=$1
                 shift
                 local start end rc
                 start=$(date +%s)
-                log "$label start"
+                log "${STACK_NAME:-stack} ${label} start" "true"
                 set +e
                 "$@"
                 rc=$?
                 set -e
                 end=$(date +%s)
-                log "$label end status=$rc duration=$((end-start))s"
+                log "${STACK_NAME:-stack} ${label} end status=$rc duration=$((end-start))s" "true"
                 return $rc
               }
             - !Sub |
                 export OVERRIDE_AMI='${UbuntuAMIOverride}'
                 export USERDATA_SCRIPT_URL='${UserdataScriptUrl}'
                 export SLACK_WEBHOOK_URL='${SlackWebhookUrl}'
+                export DEBUG='${Debug}'
                 export STACK_NAME='${AWS::StackName}'
                 export STACK_NAME_SUFFIX='${StackNameSuffix}'
                 export USER='${User}'

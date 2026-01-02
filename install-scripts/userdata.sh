@@ -414,18 +414,6 @@ EOF
 # install aws cli
 snap install aws-cli --classic
 
-# Send Slack notification if webhook URL is provided
-if [[ ! -z "$SLACK_WEBHOOK_URL" ]]; then
-  # Get external IP address
-  IP_ADDRESS=$(curl -s https://api.ipify.org/ 2>/dev/null || echo "unknown")
-  
-  SLACK_MESSAGE="{\"text\": \"Data Science Instance setup completed for $IP_ADDRESS\"}"
-  
-  curl -X POST -H 'Content-type: application/json' \
-    --data "$SLACK_MESSAGE" \
-    "$SLACK_WEBHOOK_URL" || echo "Failed to send Slack notification"
-fi
-
 # Set hostname to dsi-[stack-name-suffix]-[user]
 HOSTNAME="dsi"
 if [[ ! -z "$STACK_NAME_SUFFIX" ]]; then
@@ -448,4 +436,3 @@ else
 fi
 
 echo "Deep Learning Desktop is Ready!" > /etc/motd
-

@@ -418,14 +418,15 @@ def confirm(prompt):
 @click.option("--enable-efs", help="Enable EFS (EnableEFS, skip prompt).")
 @click.option("--ebs-size", help="EBS volume size in GB (EbsVolumeSize, skip prompt).")
 @click.option("--ubuntu-ami-override", help="Ubuntu AMI override (leave blank or omit to use default AMI).")
+@click.option("--debug", is_flag=True, help="Enable debug mode (Debug).")
 @click.option("--slack-webhook-url", help="Slack webhook URL for completion notifications (optional).")
 @click.option("--user", help="Username for hostname generation (optional).")
 @click.option("--ubuntu-password", help="Password for ubuntu user (required for DCV login).")
 @click.option("--update-stack", is_flag=True, help="Update an existing stack instead of creating a new one.")
 @click.pass_context
-def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, subnet_id, key_name, s3_bucket,
-         desktop_access_cidr, security_group_id, ami_type, instance_type, public_ip, enable_efs,
-         ebs_size, ubuntu_ami_override, slack_webhook_url, user, ubuntu_password, update_stack):
+def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, subnet_id, key_name, s3_bucket, 
+         desktop_access_cidr, security_group_id, ami_type, instance_type, public_ip, enable_efs, 
+         ebs_size, ubuntu_ami_override, debug, slack_webhook_url, user, ubuntu_password, dcv_file, update_stack):
     """
     🚀 **Interactive launcher for deep-learning-ubuntu-desktop CloudFormation stack.**
     
@@ -589,6 +590,8 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
     else:
         ubuntu_override = ubuntu_ami_override.strip() if ubuntu_ami_override else ""
 
+    debug_value = "true" if debug else "false"
+
     # Build parameters
     parameters = [
         f"ParameterKey=S3Bucket,ParameterValue={s3_bucket}",
@@ -597,6 +600,7 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
         f"ParameterKey=DesktopAccessCIDR,ParameterValue={cidr}",
         f"ParameterKey=KeyName,ParameterValue={key_name}",
         f"ParameterKey=UbuntuAMIOverride,ParameterValue={ubuntu_override}",
+        f"ParameterKey=Debug,ParameterValue={debug_value}",
         f"ParameterKey=EbsVolumeSize,ParameterValue={ebs_value}",
         f"ParameterKey=DesktopSecurityGroupId,ParameterValue={security_group_id or ''}",
         f"ParameterKey=SlackWebhookUrl,ParameterValue={slack_webhook_url or ''}",
