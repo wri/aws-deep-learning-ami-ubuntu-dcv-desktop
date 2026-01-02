@@ -26,8 +26,15 @@ def run_aws(args, region=None, profile=None):
 
 
 def confirm(prompt):
-    value = questionary.confirm(prompt, default=False).ask()
-    return bool(value)
+    while True:
+        choice = questionary.text(f"{prompt} (y/N)").ask()
+        if choice is None:
+            return False
+        choice = choice.strip().lower()
+        if choice in ("y", "yes"):
+            return True
+        if choice in ("", "n", "no"):
+            return False
 
 
 @click.command()
