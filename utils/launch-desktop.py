@@ -221,6 +221,17 @@ def get_subnets_for_vpc(vpc_id, region=None, profile=None):
     return json.loads(subnets_raw)
 
 
+def get_security_groups_for_vpc(vpc_id, region=None, profile=None):
+    """Get security groups for a specific VPC."""
+    security_groups_raw = run_aws([
+        "ec2", "describe-security-groups",
+        "--filters", f"Name=vpc-id,Values={vpc_id}",
+        "--query", "SecurityGroups[].{Id:GroupId,Name:GroupName,Description:Description}",
+        "--output", "json"
+    ], region, profile)
+    return json.loads(security_groups_raw)
+
+
 def parse_template_options(template_path):
     if not os.path.exists(template_path):
         return {}, {}
@@ -301,7 +312,7 @@ def prompt_optional_choice(label, allowed_values, default_value):
             value = questionary.text(f"{label} custom value:").ask()
             return value.strip() if value else None
         if selection == default_value:
-            return None
+            return default_value
         return selection
 
     value = questionary.text(prompt).ask()
