@@ -493,6 +493,13 @@ else
   echo "No password provided for ubuntu user"
 fi
 
+# Create ec2-user for Session Manager run-as compatibility
+if ! id ec2-user >/dev/null 2>&1; then
+  useradd -m -s /bin/bash ec2-user
+  usermod -aG sudo ec2-user
+  echo "ec2-user created for Session Manager"
+fi
+
 SCRIPT_END=$(date +%s)
 log "${STACK_NAME:-stack} userdata.sh end status=0 duration=$((SCRIPT_END-SCRIPT_START))s" "true"
 

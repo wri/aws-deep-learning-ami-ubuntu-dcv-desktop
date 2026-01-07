@@ -72,6 +72,13 @@ Parameters:
     Type: String
     Default: ''
     NoEcho: true
+
+  InstanceRoleName:
+    Description: >-
+      (Optional) Existing IAM role name to attach to the instance.
+      Leave blank to create a new role.
+    Type: String
+    Default: ''
   DesktopVpcId:
     Description: Desktop VPC ID
     Type: 'AWS::EC2::VPC::Id'
@@ -325,6 +332,9 @@ Conditions:
     - !Equals 
       - !Ref UbuntuAMIOverride
       - ''
+  CreateInstanceRole: !Equals
+    - !Ref InstanceRoleName
+    - ''
   EfsEnabled: !Equals
     - !Ref EnableEFS
     - 'true'
@@ -641,7 +651,9 @@ Resources:
 
   InstanceRole:
     Type: 'AWS::IAM::Role'
+    Condition: CreateInstanceRole
     Properties:
+      RoleName: !Sub '${AWS::StackName}-InstanceRole'
       AssumeRolePolicyDocument:
         Statement:
           - Effect: Allow
@@ -654,6 +666,7 @@ Resources:
       Path: /
       ManagedPolicyArns:
           - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSageMakerFullAccess'
+          - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
       Policies:
         - PolicyName: s3-read-write
           PolicyDocument:
@@ -702,8 +715,10 @@ Resources:
     Type: 'AWS::IAM::InstanceProfile'
     Properties:
       Path: /
-      Roles:
-        - !Ref InstanceRole
+      Roles: !If
+        - CreateInstanceRole
+        - - !Ref InstanceRole
+        - - !Ref InstanceRoleName
   
   DesktopLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate

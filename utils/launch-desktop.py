@@ -120,7 +120,7 @@ def get_aws_resources(region=None, profile=None):
     return vpcs, keypairs, buckets
 
 
-def update_stack_flow(ctx, stack_name, template, region, profile, dry_run, stack_status):
+def update_stack_flow(ctx, stack_name, template, region, profile, dry_run, stack_status, tag_value):
     if not stack_status:
         console.print(f"[red]❌ Stack '{stack_name}' does not exist. Cannot update.[/red]")
         return 1
@@ -164,6 +164,9 @@ def update_stack_flow(ctx, stack_name, template, region, profile, dry_run, stack
         "--capabilities", "CAPABILITY_NAMED_IAM",
         "--parameters"
     ] + parameters
+
+    if tag_value:
+        cmd += ["--tags", f"Key=wri:project,Value={tag_value}"]
 
     if region:
         cmd += ["--region", region]
@@ -438,6 +441,7 @@ def confirm(prompt):
 @click.option("--slack-webhook-url", help="Slack webhook URL for completion notifications (optional).")
 @click.option("--user", help="Username for hostname generation (optional).")
 @click.option("--ubuntu-password", help="Password for ubuntu user (required for DCV login).")
+@click.option("--instance-role-name", help="Existing IAM role name to attach to the instance.")
 @click.option("--update-stack", is_flag=True, help="Update an existing stack instead of creating a new one.")
 @click.pass_context
 def main(ctx, 
@@ -464,6 +468,7 @@ def main(ctx,
          slack_webhook_url, 
          user, 
          ubuntu_password, 
+         instance_role_name,
          skip_desktop_install, 
          update_stack
          ):
@@ -554,6 +559,7 @@ def main(ctx,
             profile=profile,
             dry_run=dry_run,
             stack_status=stack_status,
+            tag_value=stack_name_suffix.strip() if stack_name_suffix else "",
         )
 
     if stack_status:
@@ -680,6 +686,7 @@ def main(ctx,
         f"ParameterKey=StackNameSuffix,ParameterValue={stack_name_suffix or ''}",
         f"ParameterKey=User,ParameterValue={user or ''}",
         f"ParameterKey=UbuntuPassword,ParameterValue={ubuntu_password or ''}",
+        f"ParameterKey=InstanceRoleName,ParameterValue={instance_role_name or ''}",
     ]
 
     # Add optional parameters
@@ -700,6 +707,9 @@ def main(ctx,
         "--capabilities", "CAPABILITY_NAMED_IAM",
         "--parameters"
     ] + parameters
+
+    if stack_name_suffix:
+        cmd += ["--tags", f"Key=wri:project,Value={stack_name_suffix.strip()}"]
 
     if region:
         cmd += ["--region", region]
