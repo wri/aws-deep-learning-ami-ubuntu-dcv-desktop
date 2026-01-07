@@ -421,28 +421,26 @@ then
   echo "export fsx_mount_name=${FSX_MOUNT_NAME}" >> /home/ubuntu/.bashrc
 fi
 
-# install miniconda3 if anaconda3, or miniconda3 are not installed
-if [[ ! -d "/home/ubuntu/anaconda3" ]] && [[ ! -d "/home/ubuntu/miniconda3" ]]
+# install miniforge3 if anaconda3 or miniforge3 are not installed
+if [[ ! -d "/home/ubuntu/anaconda3" ]] && [[ ! -d "/home/ubuntu/miniforge3" ]]
 then
-  wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /home/ubuntu/miniconda3.sh
-  HOME=/home/ubuntu bash /home/ubuntu/miniconda3.sh -b -p /home/ubuntu/miniconda3
-  echo "source /home/ubuntu/miniconda3/etc/profile.d/conda.sh" >> /home/ubuntu/.bashrc
-  rm /home/ubuntu/miniconda3.sh
+  wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /home/ubuntu/miniforge3.sh
+  HOME=/home/ubuntu bash /home/ubuntu/miniforge3.sh -b -p /home/ubuntu/miniforge3
+  echo "source /home/ubuntu/miniforge3/etc/profile.d/conda.sh" >> /home/ubuntu/.bashrc
+  rm /home/ubuntu/miniforge3.sh
 
-  source /home/ubuntu/miniconda3/etc/profile.d/conda.sh
-  conda tos accept --override-channels --channel  https://repo.anaconda.com/pkgs/main
-  conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
-  conda update -y --name base -c defaults conda
+  source /home/ubuntu/miniforge3/etc/profile.d/conda.sh
+  conda update -y --name base conda
 
   # install jupyterlab and boto3 in base env
   conda activate && \
   conda install -y -c conda-forge jupyterlab && \
-  conda install -y ipykernel && \
-  conda install -y boto3 && \
-  conda install -y nb_conda_kernels && \
+  conda install -y -c conda-forge ipykernel && \
+  conda install -y -c conda-forge boto3 && \
+  conda install -y -c conda-forge nb_conda_kernels && \
   conda deactivate
 
-  chown -R ubuntu:ubuntu /home/ubuntu/miniconda3
+  chown -R ubuntu:ubuntu /home/ubuntu/miniforge3
   chown -R ubuntu:ubuntu /home/ubuntu/.conda
 fi
 
