@@ -525,6 +525,23 @@ def main(ctx,
         stack_name = base_name
         console.print(f"[cyan]Using stack name:[/cyan] {stack_name}")
 
+    if not os.path.exists(template):
+        console.print(f"[red]❌ Template not found:[/red] {template}")
+        return 1
+
+    if not region:
+        try:
+            default_region = subprocess.check_output(
+                ["aws", "configure", "get", "region"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            ).strip()
+        except subprocess.CalledProcessError:
+            default_region = ""
+        if not default_region:
+            console.print("[red]❌ AWS region not set. Use --region or run 'aws configure'.[/red]")
+            return 1
+
     # Check if stack already exists
     stack_status, instance_id, key_name_from_stack = get_stack_info(stack_name, region, profile)
 
@@ -725,7 +742,6 @@ def main(ctx,
             password_set=password_was_provided,
             show_dcv=install_desktop == "true",
         )
-        display_instance_info(instance_id, key_name, region, profile, is_new_stack=True, password_set=password_was_provided)
             
     except subprocess.CalledProcessError as e:
         console.print(f"[red]❌ Stack creation failed or timed out: {e}[/red]")
