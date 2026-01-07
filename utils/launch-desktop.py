@@ -439,10 +439,32 @@ def confirm(prompt):
 @click.option("--ubuntu-password", help="Password for ubuntu user (required for DCV login).")
 @click.option("--update-stack", is_flag=True, help="Update an existing stack instead of creating a new one.")
 @click.pass_context
-def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, subnet_id, key_name, s3_bucket, 
-         desktop_access_cidr, security_group_id, ami_type, instance_type, public_ip, enable_efs, 
-         desktop_flavor, ebs_size, ubuntu_ami_override, debug, slack_webhook_url, user, ubuntu_password, 
-         skip_desktop_install, update_stack):
+def main(ctx, 
+         stack_name_suffix, 
+         template, 
+         region, 
+         profile, 
+         dry_run, 
+         vpc_id, 
+         subnet_id, 
+         key_name, 
+         s3_bucket, 
+         desktop_access_cidr, 
+         security_group_id, 
+         ami_type, 
+         instance_type, 
+         public_ip, 
+         enable_efs, 
+         desktop_flavor, 
+         ebs_size, 
+         ubuntu_ami_override, 
+         debug, 
+         slack_webhook_url, 
+         user, 
+         ubuntu_password, 
+         skip_desktop_install, 
+         update_stack
+         ):
     """
     🚀 **Interactive launcher for deep-learning-ubuntu-desktop CloudFormation stack.**
     
