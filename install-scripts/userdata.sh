@@ -9,6 +9,7 @@ echo "Cloud init in progress! Logs: /var/log/cloud-init-output.log" > /etc/motd
 : "${USER:=}"
 : "${UBUNTU_PASSWORD:=}"
 : "${DESKTOP_FLAVOR:=xfce4}"
+: "${INSTALL_DESKTOP:=true}"
 : "${DEBUG:=false}"
 
 LOG_FILE=/home/ubuntu/userdata.log
@@ -178,7 +179,8 @@ apt-get -y install gnupg2
 apt-get -y install openmpi-bin libopenmpi-dev 
 apt-get -y install protobuf-compiler
 
-cat >/usr/local/bin/install-desktop.sh <<'EOF'
+if [[ "${INSTALL_DESKTOP}" == "true" ]]; then
+  cat >/usr/local/bin/install-desktop.sh <<'EOF'
 #!/bin/bash
 set -euo pipefail
 case "${DESKTOP_FLAVOR}" in
@@ -191,23 +193,22 @@ case "${DESKTOP_FLAVOR}" in
     ;;
 esac
 EOF
-chmod +x /usr/local/bin/install-desktop.sh
+  chmod +x /usr/local/bin/install-desktop.sh
 
-DESKTOP_START=$(date +%s)
-log "desktop-install start flavor=${DESKTOP_FLAVOR}"
-/usr/local/bin/install-desktop.sh
-DESKTOP_END=$(date +%s)
-log "desktop-install end duration=$((DESKTOP_END-DESKTOP_START))s"
+  DESKTOP_START=$(date +%s)
+  log "desktop-install start flavor=${DESKTOP_FLAVOR}"
+  /usr/local/bin/install-desktop.sh
+  DESKTOP_END=$(date +%s)
+  log "desktop-install end duration=$((DESKTOP_END-DESKTOP_START))s"
 
-if [[ ! -x "$(command -v dcv)" ]]
-then
-apt-get -y install gdm3
-echo "/usr/sbin/gdm3" > /etc/X11/default-display-manager
-dpkg-reconfigure gdm3
-sed -i -e "s/#WaylandEnable=false/WaylandEnable=false/g" /etc/gdm3/custom.conf
-(systemctl stop gdm3 && systemctl start gdm3 && apt-get -y install mesa-utils) || (sync &&  reboot)
+  if [[ ! -x "$(command -v dcv)" ]]; then
+    apt-get -y install gdm3
+    echo "/usr/sbin/gdm3" > /etc/X11/default-display-manager
+    dpkg-reconfigure gdm3
+    sed -i -e "s/#WaylandEnable=false/WaylandEnable=false/g" /etc/gdm3/custom.conf
+    (systemctl stop gdm3 && systemctl start gdm3 && apt-get -y install mesa-utils) || (sync &&  reboot)
 
-cat >/usr/local/bin/gpu-setup.sh <<'EOF'
+    cat >/usr/local/bin/gpu-setup.sh <<'EOF'
 #!/bin/bash
 set -euo pipefail
 if lspci | grep -q NVIDIA && command -v nvidia-smi >/dev/null 2>&1; then
@@ -284,31 +285,31 @@ EndSection
 EOL
 fi
 EOF
-chmod +x /usr/local/bin/gpu-setup.sh
+    chmod +x /usr/local/bin/gpu-setup.sh
 
-/usr/local/bin/gpu-setup.sh
+    /usr/local/bin/gpu-setup.sh
 
-( [[ "$VERSION_ID" == 24.04* ]] && \
-  wget https://d1uj6qtbmh3dt5.cloudfront.net/2024.0/Servers/nice-dcv-2024.0-19030-ubuntu2404-x86_64.tgz && \
-  tar -xvzf nice-dcv-2024.0-19030-ubuntu2404-x86_64.tgz && \
-  cd nice-dcv-2024.0-19030-ubuntu2404-x86_64 && \
-  apt-get -y install ./nice-dcv-server_2024.0.19030-1_amd64.ubuntu2404.deb) || \
-( [[ "$VERSION_ID" == 22.04* ]] && \
-  wget https://d1uj6qtbmh3dt5.cloudfront.net/2024.0/Servers/nice-dcv-2024.0-18131-ubuntu2204-x86_64.tgz && \
-  tar -xvzf nice-dcv-2024.0-18131-ubuntu2204-x86_64.tgz && \
-  cd nice-dcv-2024.0-18131-ubuntu2204-x86_64 && \
-  apt-get -y install ./nice-dcv-server_2024.0.18131-1_amd64.ubuntu2204.deb) || echo "Retrying DCV install..."
+    ( [[ "$VERSION_ID" == 24.04* ]] && \
+      wget https://d1uj6qtbmh3dt5.cloudfront.net/2024.0/Servers/nice-dcv-2024.0-19030-ubuntu2404-x86_64.tgz && \
+      tar -xvzf nice-dcv-2024.0-19030-ubuntu2404-x86_64.tgz && \
+      cd nice-dcv-2024.0-19030-ubuntu2404-x86_64 && \
+      apt-get -y install ./nice-dcv-server_2024.0.19030-1_amd64.ubuntu2404.deb) || \
+    ( [[ "$VERSION_ID" == 22.04* ]] && \
+      wget https://d1uj6qtbmh3dt5.cloudfront.net/2024.0/Servers/nice-dcv-2024.0-18131-ubuntu2204-x86_64.tgz && \
+      tar -xvzf nice-dcv-2024.0-18131-ubuntu2204-x86_64.tgz && \
+      cd nice-dcv-2024.0-18131-ubuntu2204-x86_64 && \
+      apt-get -y install ./nice-dcv-server_2024.0.18131-1_amd64.ubuntu2204.deb) || echo "Retrying DCV install..."
   
-systemctl daemon-reload && sync && reboot
-fi
+    systemctl daemon-reload && sync && reboot
+  fi
 
-#restart X server
-systemctl set-default graphical.target
-systemctl isolate graphical.target
+  #restart X server
+  systemctl set-default graphical.target
+  systemctl isolate graphical.target
 
-# Create DCV server configuration file
-[[ -d /opt/dcv-session-store ]] || mkdir /opt/dcv-session-store
-cat >/etc/dcv/dcv.conf <<EOL
+  # Create DCV server configuration file
+  [[ -d /opt/dcv-session-store ]] || mkdir /opt/dcv-session-store
+  cat >/etc/dcv/dcv.conf <<EOL
 [license]
 [log]
 [session-management]
@@ -326,30 +327,33 @@ primary-selection-copy=true
 primary-selection-paste=true
 EOL
 
-# Create DCV session permissions files
-rm -f /home/ubuntu/dcv.perms
-cat >/home/ubuntu/dcv.perms <<EOL
+  # Create DCV session permissions files
+  rm -f /home/ubuntu/dcv.perms
+  cat >/home/ubuntu/dcv.perms <<EOL
 [permissions]
 %owner% allow builtin
 EOL
 
-# Apply desktop fixes from scripts/fix-desktop-status.py (inlined for cloud-init)
-if [[ -f /etc/gdm3/custom.conf ]]; then
-  if grep -q "^WaylandEnable=" /etc/gdm3/custom.conf; then
-    sed -i -e "s/^WaylandEnable=.*/WaylandEnable=false/" /etc/gdm3/custom.conf
-  else
-    echo "WaylandEnable=false" >> /etc/gdm3/custom.conf
+  # Apply desktop fixes from scripts/fix-desktop-status.py (inlined for cloud-init)
+  if [[ -f /etc/gdm3/custom.conf ]]; then
+    if grep -q "^WaylandEnable=" /etc/gdm3/custom.conf; then
+      sed -i -e "s/^WaylandEnable=.*/WaylandEnable=false/" /etc/gdm3/custom.conf
+    else
+      echo "WaylandEnable=false" >> /etc/gdm3/custom.conf
+    fi
   fi
+
+  # Enable DCV server
+  systemctl daemon-reload
+  systemctl enable dcvserver
+  systemctl restart dcvserver
+  systemctl enable gdm3
+  systemctl restart gdm3
+
+  echo "install DCV server complete"
+else
+  log "desktop-install skipped" "true"
 fi
-
-# Enable DCV server
-systemctl daemon-reload
-systemctl enable dcvserver
-systemctl restart dcvserver
-systemctl enable gdm3
-systemctl restart gdm3
-
-echo "install DCV server complete"
 
 # install nfs-common
 apt-get -y install nfs-common

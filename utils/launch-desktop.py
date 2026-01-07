@@ -321,7 +321,8 @@ def get_public_cidr():
     return None
 
 
-def display_instance_info(instance_id, key_name, region=None, profile=None, is_new_stack=False, password_set=False):
+def display_instance_info(instance_id, key_name, region=None, profile=None, is_new_stack=False, password_set=False,
+                          show_dcv=True):
     """Display instance information including SSH and DCV connection details."""
     if not instance_id:
         console.print("[red]❌ Could not find DesktopInstance resource[/red]")
@@ -365,19 +366,20 @@ def display_instance_info(instance_id, key_name, region=None, profile=None, is_n
             else:
                 console.print(f"[green]🔑 SSH Connection (replace KEY_NAME with your key):[/green]")
                 console.print(f"   [dim]ssh -i ~/.ssh/KEY_NAME.pem ubuntu@{public_ip}[/dim]")
-            
-            console.print(f"[green]🖥️  DCV Connection:[/green]")
-            console.print(f"   [dim]https://{public_ip}:8443[/dim]")
-            
-            if is_new_stack and not password_set:
-                console.print("")
-                console.print(Panel.fit(
-                    "[yellow]⚠️  REMINDER: Set password for DCV login!\n"
-                    "Default username: ubuntu\n"
-                    "Run: sudo passwd ubuntu[/yellow]",
-                    title="Password Required",
-                    border_style="yellow"
-                ))
+
+            if show_dcv:
+                console.print(f"[green]🖥️  DCV Connection:[/green]")
+                console.print(f"   [dim]https://{public_ip}:8443[/dim]")
+
+                if is_new_stack and not password_set:
+                    console.print("")
+                    console.print(Panel.fit(
+                        "[yellow]⚠️  REMINDER: Set password for DCV login!\n"
+                        "Default username: ubuntu\n"
+                        "Run: sudo passwd ubuntu[/yellow]",
+                        title="Password Required",
+                        border_style="yellow"
+                    ))
             
     except subprocess.CalledProcessError:
         console.print("[yellow]⚠️  Could not retrieve instance network information[/yellow]")
@@ -420,6 +422,7 @@ def confirm(prompt):
 @click.option("--ebs-size", help="EBS volume size in GB (EbsVolumeSize, skip prompt).")
 @click.option("--ubuntu-ami-override", help="Ubuntu AMI override (leave blank or omit to use default AMI).")
 @click.option("--debug", is_flag=True, help="Enable debug mode (Debug).")
+@click.option("--skip-desktop-install", is_flag=True, help="Skip installing desktop and DCV components.")
 @click.option("--slack-webhook-url", help="Slack webhook URL for completion notifications (optional).")
 @click.option("--user", help="Username for hostname generation (optional).")
 @click.option("--ubuntu-password", help="Password for ubuntu user (required for DCV login).")
@@ -427,7 +430,8 @@ def confirm(prompt):
 @click.pass_context
 def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, subnet_id, key_name, s3_bucket, 
          desktop_access_cidr, security_group_id, ami_type, instance_type, public_ip, enable_efs, 
-         desktop_flavor, ebs_size, ubuntu_ami_override, debug, slack_webhook_url, user, ubuntu_password, dcv_file, update_stack):
+         desktop_flavor, ebs_size, ubuntu_ami_override, debug, slack_webhook_url, user, ubuntu_password, 
+         skip_desktop_install, update_stack):
     """
     🚀 **Interactive launcher for deep-learning-ubuntu-desktop CloudFormation stack.**
     
@@ -556,6 +560,8 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
                 cidr = cidr.strip()
                 break
 
+    install_desktop = "false" if skip_desktop_install else defaults.get("InstallDesktop", "true")
+
     # Optional parameters
     if not ami_type:
         ami_type = prompt_optional_choice("AMI type (AWSUbuntuAMIType)", 
@@ -570,8 +576,11 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
         enable_efs = prompt_optional_choice("Enable EFS (EnableEFS)", 
             allowed.get("EnableEFS"), defaults.get("EnableEFS", "false"))
     if not desktop_flavor:
-        desktop_flavor = prompt_optional_choice("Desktop flavor (DesktopFlavor)",
-            allowed.get("DesktopFlavor"), defaults.get("DesktopFlavor", "xfce4"))
+        if install_desktop == "true":
+            desktop_flavor = prompt_optional_choice("Desktop flavor (DesktopFlavor)",
+                allowed.get("DesktopFlavor"), defaults.get("DesktopFlavor", "xfce4"))
+        else:
+            desktop_flavor = defaults.get("DesktopFlavor", "xfce4")
 
     if ebs_size:
         ebs_value = str(ebs_size)
@@ -605,6 +614,7 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
         f"ParameterKey=KeyName,ParameterValue={key_name}",
         f"ParameterKey=UbuntuAMIOverride,ParameterValue={ubuntu_override}",
         f"ParameterKey=Debug,ParameterValue={debug_value}",
+        f"ParameterKey=InstallDesktop,ParameterValue={install_desktop}",
         f"ParameterKey=DesktopFlavor,ParameterValue={desktop_flavor}",
         f"ParameterKey=EbsVolumeSize,ParameterValue={ebs_value}",
         f"ParameterKey=DesktopSecurityGroupId,ParameterValue={security_group_id or ''}",
@@ -665,6 +675,15 @@ def main(ctx, stack_name_suffix, template, region, profile, dry_run, vpc_id, sub
         # Get final stack info and display
         _, instance_id, _ = get_stack_info(stack_name, region, profile)
         password_was_provided = 'ubuntu_password' in ctx.params and ctx.params['ubuntu_password'] is not None
+        display_instance_info(
+            instance_id,
+            key_name,
+            region,
+            profile,
+            is_new_stack=True,
+            password_set=password_was_provided,
+            show_dcv=install_desktop == "true",
+        )
         display_instance_info(instance_id, key_name, region, profile, is_new_stack=True, password_set=password_was_provided)
             
     except subprocess.CalledProcessError as e:

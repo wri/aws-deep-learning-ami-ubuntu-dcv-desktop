@@ -115,6 +115,14 @@ Parameters:
       - 'true'
       - 'false'
 
+  InstallDesktop:
+    Description: Install desktop and DCV components.
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
   DesktopFlavor:
     Description: Desktop package to install.
     Type: String
@@ -828,6 +836,7 @@ Resources:
                 export USERDATA_SCRIPT_URL='${UserdataScriptUrl}'
                 export SLACK_WEBHOOK_URL='${SlackWebhookUrl}'
                 export DEBUG='${Debug}'
+                export INSTALL_DESKTOP='${InstallDesktop}'
                 export DESKTOP_FLAVOR='${DesktopFlavor}'
                 export STACK_NAME='${AWS::StackName}'
                 export STACK_NAME_SUFFIX='${StackNameSuffix}'
