@@ -432,6 +432,7 @@ def confirm(prompt):
 @click.option("--desktop-flavor", help="Desktop package to install (DesktopFlavor, skip prompt).")
 @click.option("--ebs-size", help="EBS volume size in GB (EbsVolumeSize, skip prompt).")
 @click.option("--ubuntu-ami-override", help="Ubuntu AMI override (leave blank or omit to use default AMI).")
+@click.option("--userdata-script-url", help="User-data script URL override (UserdataScriptUrl, skip prompt).")
 @click.option("--debug", is_flag=True, help="Enable debug mode (Debug).")
 @click.option("--skip-desktop-install", is_flag=True, help="Skip installing desktop and DCV components.")
 @click.option("--slack-webhook-url", help="Slack webhook URL for completion notifications (optional).")
@@ -458,6 +459,7 @@ def main(ctx,
          desktop_flavor, 
          ebs_size, 
          ubuntu_ami_override, 
+         userdata_script_url, 
          debug, 
          slack_webhook_url, 
          user, 
@@ -636,6 +638,11 @@ def main(ctx,
     else:
         ubuntu_override = ubuntu_ami_override.strip() if ubuntu_ami_override else ""
 
+    if userdata_script_url:
+        userdata_script_value = userdata_script_url.strip()
+    else:
+        userdata_script_value = defaults.get("UserdataScriptUrl", "")
+
     debug_value = "true" if debug else "false"
 
     # Build parameters
@@ -646,6 +653,7 @@ def main(ctx,
         f"ParameterKey=DesktopAccessCIDR,ParameterValue={cidr}",
         f"ParameterKey=KeyName,ParameterValue={key_name}",
         f"ParameterKey=UbuntuAMIOverride,ParameterValue={ubuntu_override}",
+        f"ParameterKey=UserdataScriptUrl,ParameterValue={userdata_script_value}",
         f"ParameterKey=Debug,ParameterValue={debug_value}",
         f"ParameterKey=InstallDesktop,ParameterValue={install_desktop}",
         f"ParameterKey=DesktopFlavor,ParameterValue={desktop_flavor}",
