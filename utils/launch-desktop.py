@@ -442,6 +442,7 @@ def confirm(prompt):
 @click.option("--user", help="Username for hostname generation (optional).")
 @click.option("--ubuntu-password", help="Password for ubuntu user (required for DCV login).")
 @click.option("--instance-role-name", help="Existing IAM role name to attach to the instance.")
+@click.option("--project-tag", help="Override value for wri:project tag (defaults to stack-name-suffix).")
 @click.option("--update-stack", is_flag=True, help="Update an existing stack instead of creating a new one.")
 @click.pass_context
 def main(ctx, 
@@ -469,6 +470,7 @@ def main(ctx,
          user, 
          ubuntu_password, 
          instance_role_name,
+         project_tag,
          skip_desktop_install, 
          update_stack
          ):
@@ -559,7 +561,7 @@ def main(ctx,
             profile=profile,
             dry_run=dry_run,
             stack_status=stack_status,
-            tag_value=stack_name_suffix.strip() if stack_name_suffix else "",
+            tag_value=project_tag.strip() if project_tag else (stack_name_suffix.strip() if stack_name_suffix else ""),
         )
 
     if stack_status:
@@ -687,6 +689,7 @@ def main(ctx,
         f"ParameterKey=User,ParameterValue={user or ''}",
         f"ParameterKey=UbuntuPassword,ParameterValue={ubuntu_password or ''}",
         f"ParameterKey=InstanceRoleName,ParameterValue={instance_role_name or ''}",
+        f"ParameterKey=ProjectTagValue,ParameterValue={project_tag or ''}",
     ]
 
     # Add optional parameters
@@ -708,8 +711,9 @@ def main(ctx,
         "--parameters"
     ] + parameters
 
-    if stack_name_suffix:
-        cmd += ["--tags", f"Key=wri:project,Value={stack_name_suffix.strip()}"]
+    if project_tag or stack_name_suffix:
+        tag_value = project_tag.strip() if project_tag else stack_name_suffix.strip()
+        cmd += ["--tags", f"Key=wri:project,Value={tag_value}"]
 
     if region:
         cmd += ["--region", region]

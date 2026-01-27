@@ -57,6 +57,12 @@ Parameters:
       Leave blank if no suffix was used.
     Type: String
     Default: ''
+
+  ProjectTagValue:
+    Description: >-
+      (Optional) Override value for wri:project tag. Leave blank to use StackNameSuffix.
+    Type: String
+    Default: ''
   
   User:
     Description: >-
@@ -335,6 +341,10 @@ Conditions:
   CreateInstanceRole: !Equals
     - !Ref InstanceRoleName
     - ''
+  UseProjectTagValue: !Not
+    - !Equals
+      - !Ref ProjectTagValue
+      - ''
   EfsEnabled: !Equals
     - !Ref EnableEFS
     - 'true'
@@ -458,6 +468,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Ref 'AWS::StackName'
+        - Key: wri:project
+          Value: !If [UseProjectTagValue, !Ref ProjectTagValue, !Ref StackNameSuffix]
 
   DesktopSecurityGroupCIDRIngressDCV: 
     Condition: CreateNewSecurityGroup
@@ -525,6 +537,8 @@ Resources:
       FileSystemTags:
         - Key: Name
           Value: !Ref 'AWS::StackName'
+        - Key: wri:project
+          Value: !If [UseProjectTagValue, !Ref ProjectTagValue, !Ref StackNameSuffix]
   
   EFSMountTarget:
     Condition: CreateNewEFSFileSystem
@@ -541,6 +555,11 @@ Resources:
     Properties:
       GroupDescription: Security group for EFS mount target
       VpcId: !Ref DesktopVpcId
+      Tags:
+        - Key: Name
+          Value: !Ref 'AWS::StackName'
+        - Key: wri:project
+          Value: !If [UseProjectTagValue, !Ref ProjectTagValue, !Ref StackNameSuffix]
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 2049
@@ -588,6 +607,11 @@ Resources:
     Properties:
       GroupDescription: Security group for FSx mount target
       VpcId: !Ref DesktopVpcId
+      Tags:
+        - Key: Name
+          Value: !Ref 'AWS::StackName'
+        - Key: wri:project
+          Value: !If [UseProjectTagValue, !Ref ProjectTagValue, !Ref StackNameSuffix]
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 988
@@ -648,12 +672,17 @@ Resources:
       Tags:
         - Key: Name
           Value: !Ref 'AWS::StackName'
+        - Key: wri:project
+          Value: !If [UseProjectTagValue, !Ref ProjectTagValue, !Ref StackNameSuffix]
 
   InstanceRole:
     Type: 'AWS::IAM::Role'
     Condition: CreateInstanceRole
     Properties:
       RoleName: !Sub '${AWS::StackName}-InstanceRole'
+      Tags:
+        - Key: wri:project
+          Value: !If [UseProjectTagValue, !Ref ProjectTagValue, !Ref StackNameSuffix]
       AssumeRolePolicyDocument:
         Statement:
           - Effect: Allow
@@ -715,6 +744,9 @@ Resources:
     Type: 'AWS::IAM::InstanceProfile'
     Properties:
       Path: /
+      Tags:
+        - Key: wri:project
+          Value: !If [UseProjectTagValue, !Ref ProjectTagValue, !Ref StackNameSuffix]
       Roles: !If
         - CreateInstanceRole
         - - !Ref InstanceRole
@@ -727,6 +759,21 @@ Resources:
         MetadataOptions:
           HttpTokens: "required"
           HttpEndpoint: "enabled"
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: wri:project
+                Value: !If [UseProjectTagValue, !Ref ProjectTagValue, !Ref StackNameSuffix]
+          - ResourceType: volume
+            Tags:
+              - Key: wri:project
+                Value: !If [UseProjectTagValue, !Ref ProjectTagValue, !Ref StackNameSuffix]
+              - Key: Name
+                Value: !Sub '${AWS::StackName}- system drive'
+          - ResourceType: network-interface
+            Tags:
+              - Key: wri:project
+                Value: !If [UseProjectTagValue, !Ref ProjectTagValue, !Ref StackNameSuffix]
         NetworkInterfaces: 
         - AssociatePublicIpAddress: !Ref DesktopHasPublicIpAddress
           DeviceIndex: "0"
@@ -770,6 +817,21 @@ Resources:
         MetadataOptions:
           HttpTokens: "required"
           HttpEndpoint: "enabled" 
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: wri:project
+                Value: !If [UseProjectTagValue, !Ref ProjectTagValue, !Ref StackNameSuffix]
+          - ResourceType: volume
+            Tags:
+              - Key: wri:project
+                Value: !If [UseProjectTagValue, !Ref ProjectTagValue, !Ref StackNameSuffix]
+              - Key: Name
+                Value: !Sub '${AWS::StackName}- system drive'
+          - ResourceType: network-interface
+            Tags:
+              - Key: wri:project
+                Value: !If [UseProjectTagValue, !Ref ProjectTagValue, !Ref StackNameSuffix]
         NetworkInterfaces:
         - AssociatePublicIpAddress: !Ref DesktopHasPublicIpAddress
           Description: NetworkInterfaces Configuration For EFA
@@ -823,6 +885,8 @@ Resources:
       Tags: 
         - Key: "Name"
           Value: !Ref 'AWS::StackName'
+        - Key: wri:project
+          Value: !If [UseProjectTagValue, !Ref ProjectTagValue, !Ref StackNameSuffix]
       UserData: !Base64 
         'Fn::Join':
           - ''
