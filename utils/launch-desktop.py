@@ -5,6 +5,7 @@
 # ///
 import json
 import os
+import glob
 import re
 import subprocess
 import sys
@@ -63,9 +64,10 @@ def get_stack_info(stack_name, region=None, profile=None):
         instance_id = None
         key_name = None
         for output in outputs:
-            if output.get("OutputKey") == "InstanceId":
+            output_key = output.get("OutputKey")
+            if output_key in ("InstanceId", "EC2instanceID"):
                 instance_id = output.get("OutputValue")
-            elif output.get("OutputKey") == "KeyPairName":
+            elif output_key == "KeyPairName":
                 key_name = output.get("OutputValue")
         
         # Fallback: get instance ID from resources if not in outputs
@@ -237,18 +239,36 @@ def get_security_groups_for_vpc(vpc_id, region=None, profile=None):
 
 def parse_template_options(template_path):
     if not os.path.exists(template_path):
-        return {}, {}
+        return {}, {}, set()
 
     defaults = {}
     allowed = {}
+    parameters = set()
     current = None
     in_allowed = False
+    in_params = False
 
     with open(template_path, "r", encoding="utf-8") as handle:
         for line in handle:
+            if re.match(r"^Parameters:\s*$", line):
+                in_params = True
+                current = None
+                in_allowed = False
+                continue
+
+            if in_params and re.match(r"^[A-Za-z0-9].*:\s*$", line) and not line.startswith(" "):
+                in_params = False
+                current = None
+                in_allowed = False
+                continue
+
+            if not in_params:
+                continue
+
             key_match = re.match(r"^\s{2}([A-Za-z0-9]+):\s*$", line)
             if key_match:
                 current = key_match.group(1)
+                parameters.add(current)
                 in_allowed = False
                 continue
 
@@ -271,7 +291,84 @@ def parse_template_options(template_path):
                         continue
                     in_allowed = False
 
-    return defaults, allowed
+    return defaults, allowed, parameters
+
+
+def resolve_param_name(param_names, *candidates):
+    for name in candidates:
+        if name in param_names:
+            return name
+    return None
+
+
+def param_is_required(param_name, defaults):
+    return bool(param_name) and param_name not in defaults
+
+
+def find_ssh_public_keys():
+    ssh_dir = os.path.expanduser("~/.ssh")
+    if not os.path.isdir(ssh_dir):
+        return []
+    keys = []
+    for path in sorted(glob.glob(os.path.join(ssh_dir, "*.pub"))):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                content = handle.read().strip()
+        except OSError:
+            continue
+        if content:
+            keys.append({"path": path, "content": content})
+    return keys
+
+
+def resolve_ssh_public_key(value):
+    if not value:
+        return ""
+    value = value.strip()
+    if not value:
+        return ""
+    candidate = os.path.expanduser(value)
+    if os.path.isfile(candidate):
+        try:
+            with open(candidate, "r", encoding="utf-8") as handle:
+                return handle.read().strip()
+        except OSError:
+            return value
+    return value
+
+
+def prompt_ssh_public_key():
+    keys = find_ssh_public_keys()
+    if keys:
+        choices = [
+            Choice(
+                title=f"{os.path.basename(item['path'])}  {item['content'][:48]}...",
+                value=item,
+            )
+            for item in keys
+        ]
+        choices.append(Choice(title="Enter custom public key", value="__custom__"))
+        selection = questionary.select(
+            "Select SSH public key",
+            choices=choices,
+            use_shortcuts=True,
+        ).ask()
+        if selection is None:
+            console.print("[red]Cancelled.[/red]")
+            sys.exit(1)
+        if selection == "__custom__":
+            value = questionary.text("SSH public key (paste or path to .pub file)").ask()
+            if value is None:
+                console.print("[red]Cancelled.[/red]")
+                sys.exit(1)
+            return resolve_ssh_public_key(value)
+        return selection["content"]
+
+    value = questionary.text("SSH public key (paste or path to .pub file)").ask()
+    if value is None:
+        console.print("[red]Cancelled.[/red]")
+        sys.exit(1)
+    return resolve_ssh_public_key(value)
 
 
 def select_from_list(items, label, formatter=None):
@@ -442,6 +539,8 @@ def confirm(prompt):
 @click.option("--user", help="Username for hostname generation (optional).")
 @click.option("--ubuntu-password", help="Password for ubuntu user (required for DCV login).")
 @click.option("--instance-role-name", help="Existing IAM role name to attach to the instance.")
+@click.option("--ssh-public-key", help="SSH public key content or path to .pub file (Windows SSH).")
+@click.option("--allow-ssh-port", help="Allow inbound SSH (allowSSHport, skip prompt).")
 @click.option("--project-tag", help="Override value for wri:project tag (defaults to stack-name-suffix).")
 @click.option("--update-stack", is_flag=True, help="Update an existing stack instead of creating a new one.")
 @click.pass_context
@@ -470,6 +569,8 @@ def main(ctx,
          user, 
          ubuntu_password, 
          instance_role_name,
+         ssh_public_key,
+         allow_ssh_port,
          project_tag,
          skip_desktop_install, 
          update_stack
@@ -573,32 +674,67 @@ def main(ctx,
         return 1
 
     # Parse template
-    defaults, allowed = parse_template_options(template)
+    defaults, allowed, param_names = parse_template_options(template)
+    vpc_param = resolve_param_name(param_names, "DesktopVpcId", "vpcID")
+    subnet_param = resolve_param_name(param_names, "DesktopVpcSubnetId", "subnetID")
+    cidr_param = resolve_param_name(param_names, "DesktopAccessCIDR", "ingressIPv4")
+    key_param = resolve_param_name(param_names, "KeyName")
+    s3_param = resolve_param_name(param_names, "S3Bucket")
+    security_group_param = resolve_param_name(param_names, "DesktopSecurityGroupId")
+    ami_type_param = resolve_param_name(param_names, "AWSUbuntuAMIType")
+    instance_type_param = resolve_param_name(param_names, "DesktopInstanceType", "instanceType")
+    public_ip_param = resolve_param_name(param_names, "DesktopHasPublicIpAddress", "displayPublicIP")
+    enable_efs_param = resolve_param_name(param_names, "EnableEFS")
+    desktop_flavor_param = resolve_param_name(param_names, "DesktopFlavor")
+    ebs_size_param = resolve_param_name(param_names, "EbsVolumeSize", "volumeSize")
+    ubuntu_override_param = resolve_param_name(param_names, "UbuntuAMIOverride")
+    userdata_param = resolve_param_name(param_names, "UserdataScriptUrl")
+    debug_param = resolve_param_name(param_names, "Debug")
+    slack_param = resolve_param_name(param_names, "SlackWebhookUrl")
+    stack_suffix_param = resolve_param_name(param_names, "StackNameSuffix")
+    user_param = resolve_param_name(param_names, "User")
+    ubuntu_password_param = resolve_param_name(param_names, "UbuntuPassword")
+    instance_role_param = resolve_param_name(param_names, "InstanceRoleName")
+    project_tag_param = resolve_param_name(param_names, "ProjectTagValue")
+    ssh_public_key_param = resolve_param_name(param_names, "sshPublicKey")
+    allow_ssh_param = resolve_param_name(param_names, "allowSSHport")
+    template_supports_ssh_key = ssh_public_key_param is not None
+    required_values = []
+    for param_name, value in [
+        (vpc_param, vpc_id),
+        (subnet_param, subnet_id),
+        (cidr_param, desktop_access_cidr),
+        (key_param, key_name),
+        (s3_param, s3_bucket),
+    ]:
+        if param_is_required(param_name, defaults):
+            required_values.append(bool(value))
+    non_interactive = all(required_values) if required_values else False
 
     # Interactive prompts (only if not provided via command line)
-    if not vpc_id:
+    if vpc_param and not vpc_id:
         vpcs, keypairs, buckets = get_aws_resources(region, profile)
         vpc = select_from_list(vpcs, "VPCs", 
             formatter=lambda v: f"{v.get('Id')}  {v.get('Cidr')}  {v.get('Name') or ''}".strip())
         vpc_id = vpc if isinstance(vpc, str) else vpc.get("Id")
 
-    if not subnet_id:
+    if subnet_param and not subnet_id:
         subnets = get_subnets_for_vpc(vpc_id, region, profile)
         subnet = select_from_list(subnets, "subnets",
             formatter=lambda s: f"{s.get('Id')}  {s.get('Cidr')}  {s.get('Az')}  public={s.get('Public')}  {s.get('Name') or ''}".strip())
         subnet_id = subnet if isinstance(subnet, str) else subnet.get("Id")
 
-    if not key_name:
+    if key_param and not key_name:
         if 'keypairs' not in locals():
             _, keypairs, _ = get_aws_resources(region, profile)
         key_name = select_from_list(keypairs, "EC2 key pairs")
         
-    if not s3_bucket:
+    if s3_param and not s3_bucket:
         if 'buckets' not in locals():
             _, _, buckets = get_aws_resources(region, profile)
         s3_bucket = select_from_list(buckets, "S3 buckets")
 
-    if not security_group_id:
+    if security_group_param and not security_group_id:
         security_groups = get_security_groups_for_vpc(vpc_id, region, profile)
         security_groups.insert(0, {"Id": "", "Name": "Auto-create new security group", "Description": "Let CloudFormation create a new security group"})
         
@@ -607,100 +743,138 @@ def main(ctx,
         security_group_id = security_group if isinstance(security_group, str) else security_group.get("Id")
 
     # Get CIDR
-    if desktop_access_cidr:
-        cidr = desktop_access_cidr.strip()
-    else:
-        default_cidr = get_public_cidr()
-        while True:
-            cidr = questionary.text("Desktop access CIDR (e.g. 1.2.3.4/32)", default=default_cidr or "").ask()
-            if cidr is None:
-                console.print("[red]Cancelled.[/red]")
-                return 1
-            if cidr.strip():
-                cidr = cidr.strip()
-                break
+    cidr = ""
+    if cidr_param:
+        if desktop_access_cidr:
+            cidr = desktop_access_cidr.strip()
+        else:
+            default_cidr = get_public_cidr()
+            while True:
+                cidr = questionary.text("Desktop access CIDR (e.g. 1.2.3.4/32)", default=default_cidr or "").ask()
+                if cidr is None:
+                    console.print("[red]Cancelled.[/red]")
+                    return 1
+                if cidr.strip():
+                    cidr = cidr.strip()
+                    break
 
-    install_desktop = "false" if skip_desktop_install else defaults.get("InstallDesktop", "true")
+    install_desktop = None
+    if "InstallDesktop" in param_names:
+        install_desktop = "false" if skip_desktop_install else defaults.get("InstallDesktop", "true")
+
+    ssh_public_key_value = ""
+    if template_supports_ssh_key:
+        if ssh_public_key:
+            ssh_public_key_value = resolve_ssh_public_key(ssh_public_key)
+        elif not non_interactive:
+            ssh_public_key_value = prompt_ssh_public_key()
 
     # Optional parameters
-    if not ami_type:
-        ami_type = prompt_optional_choice("AMI type (AWSUbuntuAMIType)", 
-            allowed.get("AWSUbuntuAMIType"), defaults.get("AWSUbuntuAMIType"))
-    if not instance_type:
-        instance_type = prompt_optional_choice("Instance type (DesktopInstanceType)", 
-            allowed.get("DesktopInstanceType"), defaults.get("DesktopInstanceType"))
-    if not public_ip:
-        public_ip = prompt_optional_choice("Desktop has public IP (DesktopHasPublicIpAddress)", 
-            allowed.get("DesktopHasPublicIpAddress"), defaults.get("DesktopHasPublicIpAddress", "true"))
-    if not enable_efs:
-        enable_efs = prompt_optional_choice("Enable EFS (EnableEFS)", 
-            allowed.get("EnableEFS"), defaults.get("EnableEFS", "false"))
-    if not desktop_flavor:
+    if ami_type_param and not ami_type:
+        ami_type = prompt_optional_choice(f"AMI type ({ami_type_param})", 
+            allowed.get(ami_type_param), defaults.get(ami_type_param))
+    if instance_type_param and not instance_type:
+        instance_type = prompt_optional_choice(f"Instance type ({instance_type_param})", 
+            allowed.get(instance_type_param), defaults.get(instance_type_param))
+    if public_ip_param and not public_ip:
+        public_ip = prompt_optional_choice(f"Desktop has public IP ({public_ip_param})", 
+            allowed.get(public_ip_param), defaults.get(public_ip_param))
+    if enable_efs_param and not enable_efs:
+        enable_efs = prompt_optional_choice(f"Enable EFS ({enable_efs_param})", 
+            allowed.get(enable_efs_param), defaults.get(enable_efs_param))
+    if desktop_flavor_param and not desktop_flavor:
         if install_desktop == "true":
-            desktop_flavor = prompt_optional_choice("Desktop flavor (DesktopFlavor)",
-                allowed.get("DesktopFlavor"), defaults.get("DesktopFlavor", "xfce4"))
+            desktop_flavor = prompt_optional_choice(f"Desktop flavor ({desktop_flavor_param})",
+                allowed.get(desktop_flavor_param), defaults.get(desktop_flavor_param, "xfce4"))
         else:
-            desktop_flavor = defaults.get("DesktopFlavor", "xfce4")
+            desktop_flavor = defaults.get(desktop_flavor_param, "xfce4")
 
-    if ebs_size:
-        ebs_value = str(ebs_size)
-    else:
-        ebs_value = questionary.text("EBS volume size in GB (EbsVolumeSize)", 
-            default=str(defaults.get("EbsVolumeSize", "64"))).ask()
-        if ebs_value is None:
-            console.print("[red]Cancelled.[/red]")
-            return 1
+    allow_ssh_value = allow_ssh_port
+    if allow_ssh_param and not allow_ssh_value and ssh_public_key_value and non_interactive:
+        allow_ssh_value = "Yes"
+    if allow_ssh_param and not allow_ssh_value:
+        default_allow_ssh = defaults.get(allow_ssh_param)
+        if ssh_public_key_value and default_allow_ssh == "No":
+            default_allow_ssh = "Yes"
+        allow_ssh_value = prompt_optional_choice(f"Allow SSH inbound ({allow_ssh_param})",
+            allowed.get(allow_ssh_param), default_allow_ssh)
 
-    # Determine if we're in non-interactive mode (all required options provided)
-    non_interactive = bool(vpc_id and subnet_id and key_name and s3_bucket and desktop_access_cidr)
-    
-    if ubuntu_ami_override is None and not non_interactive:
-        ubuntu_override = questionary.text("Ubuntu AMI override (leave blank to use default)", default="").ask()
-        if ubuntu_override is None:
-            console.print("[red]Cancelled.[/red]")
-            return 1
-        ubuntu_override = ubuntu_override.strip()
-    else:
-        ubuntu_override = ubuntu_ami_override.strip() if ubuntu_ami_override else ""
+    ebs_value = None
+    if ebs_size_param:
+        if ebs_size:
+            ebs_value = str(ebs_size)
+        else:
+            ebs_value = questionary.text(f"EBS volume size in GB ({ebs_size_param})", 
+                default=str(defaults.get(ebs_size_param, "64"))).ask()
+            if ebs_value is None:
+                console.print("[red]Cancelled.[/red]")
+                return 1
 
-    if userdata_script_url:
-        userdata_script_value = userdata_script_url.strip()
-    else:
-        userdata_script_value = defaults.get("UserdataScriptUrl", "")
+    ubuntu_override = ""
+    if ubuntu_override_param:
+        if ubuntu_ami_override is None and not non_interactive:
+            ubuntu_override = questionary.text("Ubuntu AMI override (leave blank to use default)", default="").ask()
+            if ubuntu_override is None:
+                console.print("[red]Cancelled.[/red]")
+                return 1
+            ubuntu_override = ubuntu_override.strip()
+        else:
+            ubuntu_override = ubuntu_ami_override.strip() if ubuntu_ami_override else ""
 
-    debug_value = "true" if debug else "false"
+    userdata_script_value = ""
+    if userdata_param:
+        if userdata_script_url:
+            userdata_script_value = userdata_script_url.strip()
+        else:
+            userdata_script_value = defaults.get(userdata_param, "")
+
+    debug_value = None
+    if debug_param:
+        debug_value = "true" if debug else "false"
 
     # Build parameters
-    parameters = [
-        f"ParameterKey=S3Bucket,ParameterValue={s3_bucket}",
-        f"ParameterKey=DesktopVpcId,ParameterValue={vpc_id}",
-        f"ParameterKey=DesktopVpcSubnetId,ParameterValue={subnet_id}",
-        f"ParameterKey=DesktopAccessCIDR,ParameterValue={cidr}",
-        f"ParameterKey=KeyName,ParameterValue={key_name}",
-        f"ParameterKey=UbuntuAMIOverride,ParameterValue={ubuntu_override}",
-        f"ParameterKey=UserdataScriptUrl,ParameterValue={userdata_script_value}",
-        f"ParameterKey=Debug,ParameterValue={debug_value}",
-        f"ParameterKey=InstallDesktop,ParameterValue={install_desktop}",
-        f"ParameterKey=DesktopFlavor,ParameterValue={desktop_flavor}",
-        f"ParameterKey=EbsVolumeSize,ParameterValue={ebs_value}",
-        f"ParameterKey=DesktopSecurityGroupId,ParameterValue={security_group_id or ''}",
-        f"ParameterKey=SlackWebhookUrl,ParameterValue={slack_webhook_url or ''}",
-        f"ParameterKey=StackNameSuffix,ParameterValue={stack_name_suffix or ''}",
-        f"ParameterKey=User,ParameterValue={user or ''}",
-        f"ParameterKey=UbuntuPassword,ParameterValue={ubuntu_password or ''}",
-        f"ParameterKey=InstanceRoleName,ParameterValue={instance_role_name or ''}",
-        f"ParameterKey=ProjectTagValue,ParameterValue={project_tag or ''}",
-    ]
+    parameters = []
+
+    def add_parameter(param_name, value, allow_empty=False):
+        if not param_name:
+            return
+        if value is None:
+            if allow_empty:
+                value = ""
+            else:
+                return
+        parameters.append(f"ParameterKey={param_name},ParameterValue={value}")
+
+    add_parameter(s3_param, s3_bucket)
+    add_parameter(vpc_param, vpc_id)
+    add_parameter(subnet_param, subnet_id)
+    add_parameter(cidr_param, cidr)
+    add_parameter(key_param, key_name)
+    add_parameter(ubuntu_override_param, ubuntu_override, allow_empty=True)
+    add_parameter(userdata_param, userdata_script_value, allow_empty=True)
+    add_parameter(debug_param, debug_value)
+    if install_desktop is not None:
+        add_parameter("InstallDesktop", install_desktop)
+    add_parameter(desktop_flavor_param, desktop_flavor)
+    add_parameter(ebs_size_param, ebs_value)
+    add_parameter(security_group_param, security_group_id if security_group_id is not None else "")
+    add_parameter(slack_param, slack_webhook_url or "")
+    add_parameter(stack_suffix_param, stack_name_suffix or "")
+    add_parameter(user_param, user or "")
+    add_parameter(ubuntu_password_param, ubuntu_password or "")
+    add_parameter(instance_role_param, instance_role_name or "")
+    add_parameter(project_tag_param, project_tag or "")
+    add_parameter(ssh_public_key_param, ssh_public_key_value)
+    add_parameter(allow_ssh_param, allow_ssh_value)
 
     # Add optional parameters
     for param_key, param_value in [
-        ("AWSUbuntuAMIType", ami_type),
-        ("DesktopInstanceType", instance_type), 
-        ("DesktopHasPublicIpAddress", public_ip),
-        ("EnableEFS", enable_efs)
+        (ami_type_param, ami_type),
+        (instance_type_param, instance_type), 
+        (public_ip_param, public_ip),
+        (enable_efs_param, enable_efs)
     ]:
-        if param_value:
-            parameters.append(f"ParameterKey={param_key},ParameterValue={param_value}")
+        add_parameter(param_key, param_value)
 
     # Build and display command
     cmd = [
@@ -754,7 +928,7 @@ def main(ctx,
             profile,
             is_new_stack=True,
             password_set=password_was_provided,
-            show_dcv=install_desktop == "true",
+            show_dcv=install_desktop == "true" if install_desktop is not None else True,
         )
             
     except subprocess.CalledProcessError as e:
