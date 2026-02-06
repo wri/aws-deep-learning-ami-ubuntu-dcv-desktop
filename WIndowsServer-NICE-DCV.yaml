@@ -278,7 +278,7 @@ Parameters:
     Description: https://docs.aws.amazon.com/ebs/latest/userguide/volume_constraints.html
     MinValue: 30
     MaxValue: 16384
-    Default: 50
+    Default: 100
   volumeType:
     Type: String
     Description: https://aws.amazon.com/ebs/general-purpose/
@@ -1558,6 +1558,9 @@ Resources:
 
                 @echo ** install Chocolatey GUI
                 choco install --no-progress -y chocolateygui
+
+                @echo ** install uv (official installer)
+                powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 
                 @Echo ** install 7-zip
                 choco install --no-progress -y 7zip.install
