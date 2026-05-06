@@ -3,13 +3,17 @@
 # requires-python = ">=3.9"
 # dependencies = ["rich-click>=1.7.0", "questionary>=2.0.1", "rich>=13.0.0"]
 # ///
+import datetime as dt
+import glob
 import json
 import os
-import glob
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.request
+from urllib.parse import urlparse
+import uuid
 import rich_click as click
 import questionary
 from questionary import Choice
@@ -24,9 +28,85 @@ click.rich_click.USE_RICH_MARKUP = True
 click.rich_click.USE_MARKDOWN = True
 click.rich_click.SHOW_ARGUMENTS = True
 click.rich_click.GROUP_ARGUMENTS_OPTIONS = True
+click.rich_click.SHOW_DEFAULT = True
 click.rich_click.STYLE_ERRORS_SUGGESTION = "magenta italic"
 click.rich_click.ERRORS_SUGGESTION = "Try running the '--help' flag for more information."
 click.rich_click.ERRORS_EPILOGUE = "To find out more, visit [link=https://github.com/your-repo]https://github.com/your-repo[/link]"
+click.rich_click.OPTION_GROUPS = {
+    "main": [
+        {
+            "name": "Defaults If Omitted",
+            "options": [
+                "--template",
+                "--region",
+                "--profile",
+                "--desktop-access-cidr-v6",
+                "--slack-webhook-url",
+                "--user",
+                "--ubuntu-password",
+                "--project-tag",
+                "--update-stack",
+                "--delete-rollback",
+            ],
+        },
+        {
+            "name": "Create VPC",
+            "options": [
+                "--create-vpc",
+                "--vpc-cidr",
+                "--public-subnet-cidr",
+                "--subnet-az",
+            ],
+        },
+        {
+            "name": "Common Prompts If Omitted",
+            "options": [
+                "--stack-name-suffix",
+                "--vpc-id",
+                "--subnet-id",
+                "--desktop-access-cidr",
+                "--instance-type",
+                "--public-ip",
+                "--assign-static-ip",
+                "--ebs-size",
+            ],
+        },
+        {
+            "name": "Windows Template Options",
+            "options": [
+                "--instance-profile-name",
+                "--driver-type",
+                "--tesla-driver-version",
+                "--allow-ssh-port",
+                "--allow-rdp-port",
+                "--listen-port",
+                "--ssh-public-key",
+            ],
+        },
+        {
+            "name": "Ubuntu Template Options",
+            "options": [
+                "--key-name",
+                "--s3-bucket",
+                "--security-group-id",
+                "--ami-type",
+                "--enable-efs",
+                "--desktop-flavor",
+                "--ubuntu-ami-override",
+                "--userdata-script-url",
+                "--skip-desktop-install",
+                "--instance-role-name",
+            ],
+        },
+        {
+            "name": "Options",
+            "options": [
+                "--debug",
+                "--dry-run",
+            ],
+        },
+    ]
+}
 
 
 def run_aws(args, region=None, profile=None):
@@ -42,6 +122,180 @@ def run_aws(args, region=None, profile=None):
         console.print(f"[red]AWS CLI Error:[/red] {exc.output.strip()}", file=sys.stderr)
         sys.exit(exc.returncode)
     return output
+
+
+def _sanitize_bucket_component(value):
+    value = value.lower()
+    value = re.sub(r"[^a-z0-9-]", "-", value)
+    value = re.sub(r"-{2,}", "-", value).strip("-")
+    return value
+
+
+def get_account_id(region=None, profile=None):
+    cmd = ["aws", "sts", "get-caller-identity", "--query", "Account", "--output", "text"]
+    if region:
+        cmd += ["--region", region]
+    if profile:
+        cmd += ["--profile", profile]
+    try:
+        output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True)
+    except subprocess.CalledProcessError:
+        return ""
+    return output.strip()
+
+
+def build_default_bucket_name(region=None, profile=None):
+    account_name = _sanitize_bucket_component(get_account_name(region, profile))
+    if not account_name:
+        raise ValueError("Account name not available via organizations:DescribeAccount.")
+    base = account_name
+    prefix = "wri-aws-"
+    max_alias_len = 63 - len(prefix) - 1 - len(region or "")
+    if max_alias_len < 1:
+        base = account_name[:12]
+    elif len(base) > max_alias_len:
+        base = base[:max_alias_len]
+    return f"{prefix}{base}-{region}"
+
+
+def is_s3_url(url):
+    return "s3.amazonaws.com" in url or ".s3." in url
+
+
+def parse_s3_url(url):
+    parsed = urlparse(url)
+    host = parsed.netloc
+    path = parsed.path.lstrip("/")
+    if host.startswith("s3."):
+        if "/" not in path:
+            return None, None
+        bucket, key = path.split("/", 1)
+        return bucket, key
+    if ".s3." in host:
+        bucket = host.split(".s3.")[0]
+        return bucket, path
+    if host.endswith(".s3.amazonaws.com"):
+        bucket = host.split(".s3.amazonaws.com")[0]
+        return bucket, path
+    return None, None
+
+
+def download_s3_object(bucket, key, region=None, profile=None):
+    handle = tempfile.NamedTemporaryFile(delete=False)
+    handle.close()
+    cmd = ["aws", "s3api", "get-object", "--bucket", bucket, "--key", key, handle.name]
+    if region:
+        cmd += ["--region", region]
+    if profile:
+        cmd += ["--profile", profile]
+    subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
+    return handle.name
+
+
+def get_account_name(region=None, profile=None):
+    account_id = get_account_id(region, profile)
+    if not account_id:
+        return ""
+    cmd = [
+        "aws",
+        "organizations",
+        "describe-account",
+        "--account-id",
+        account_id,
+        "--output",
+        "json",
+    ]
+    if region:
+        cmd += ["--region", region]
+    cmd += ["--profile", "wri-admin"]
+    try:
+        output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True)
+    except subprocess.CalledProcessError:
+        return ""
+    data = json.loads(output)
+    account = data.get("Account", {})
+    return account.get("Name", "")
+
+
+def ensure_bucket(bucket, region=None, profile=None):
+    cmd = ["aws", "s3api", "head-bucket", "--bucket", bucket]
+    if region:
+        cmd += ["--region", region]
+    if profile:
+        cmd += ["--profile", profile]
+    try:
+        subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True)
+        return
+    except subprocess.CalledProcessError:
+        pass
+    create_cmd = ["aws", "s3api", "create-bucket", "--bucket", bucket]
+    if region and region != "us-east-1":
+        create_cmd += ["--create-bucket-configuration", f"LocationConstraint={region}"]
+    if region:
+        create_cmd += ["--region", region]
+    if profile:
+        create_cmd += ["--profile", profile]
+    subprocess.check_output(create_cmd, stderr=subprocess.STDOUT, text=True)
+
+
+def upload_template_content(content, bucket, source_name, region=None, profile=None):
+    timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d%H%M%S")
+    base_name = os.path.basename(source_name) if source_name else "template.yaml"
+    stem, ext = os.path.splitext(base_name)
+    ext = ext or ".yaml"
+    key = f"cloud-formation/templates/{stem}-{timestamp}{ext}"
+    with tempfile.NamedTemporaryFile(delete=False) as handle:
+        handle.write(content)
+        temp_path = handle.name
+    try:
+        cmd = ["aws", "s3api", "put-object", "--bucket", bucket, "--key", key, "--body", temp_path]
+        if region:
+            cmd += ["--region", region]
+        if profile:
+            cmd += ["--profile", profile]
+        subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
+    finally:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+    if region == "us-east-1":
+        return f"https://{bucket}.s3.amazonaws.com/{key}"
+    return f"https://{bucket}.s3.{region}.amazonaws.com/{key}"
+
+
+def resolve_template_source(template, region=None, profile=None):
+    console.print("[dim]Resolving template source...[/dim]")
+    if template.startswith("https://") and is_s3_url(template):
+        console.print("[dim]Template is an S3 URL; downloading for parameter parsing...[/dim]")
+        bucket, key = parse_s3_url(template)
+        if not bucket or not key:
+            return template, None
+        parse_path = download_s3_object(bucket, key, region, profile)
+        return template, parse_path
+    if template.startswith("https://"):
+        console.print("[dim]Downloading template from HTTPS URL...[/dim]")
+        with urllib.request.urlopen(template) as response:
+            content = response.read()
+        console.print("[dim]Uploading template to S3...[/dim]")
+        bucket = build_default_bucket_name(region, profile)
+        ensure_bucket(bucket, region, profile)
+        template_url = upload_template_content(content, bucket, os.path.basename(urlparse(template).path), region, profile)
+        parse_handle = tempfile.NamedTemporaryFile(delete=False)
+        parse_handle.write(content)
+        parse_handle.close()
+        return template_url, parse_handle.name
+    console.print("[dim]Reading local template file...[/dim]")
+    with open(template, "rb") as handle:
+        content = handle.read()
+    if len(content) <= 51200:
+        console.print("[dim]Template size within limits; using local file...[/dim]")
+        return None, template
+    console.print("[dim]Template too large; uploading to S3...[/dim]")
+    bucket = build_default_bucket_name(region, profile)
+    ensure_bucket(bucket, region, profile)
+    template_url = upload_template_content(content, bucket, template, region, profile)
+    return template_url, template
 
 
 def get_stack_info(stack_name, region=None, profile=None):
@@ -122,7 +376,34 @@ def get_aws_resources(region=None, profile=None):
     return vpcs, keypairs, buckets
 
 
-def update_stack_flow(ctx, stack_name, template, region, profile, dry_run, stack_status, tag_value):
+def get_vpcs(region=None, profile=None):
+    vpcs_raw = run_aws([
+        "ec2", "describe-vpcs",
+        "--query", "Vpcs[].{Id:VpcId,Cidr:CidrBlock,Name:Tags[?Key=='Name']|[0].Value}",
+        "--output", "json"
+    ], region, profile)
+    return json.loads(vpcs_raw)
+
+
+def get_keypairs(region=None, profile=None):
+    keys_raw = run_aws([
+        "ec2", "describe-key-pairs",
+        "--query", "KeyPairs[].KeyName",
+        "--output", "json"
+    ], region, profile)
+    return json.loads(keys_raw)
+
+
+def get_buckets(region=None, profile=None):
+    buckets_raw = run_aws([
+        "s3api", "list-buckets",
+        "--query", "Buckets[].Name",
+        "--output", "json"
+    ], region, profile)
+    return json.loads(buckets_raw)
+
+
+def update_stack_flow(ctx, stack_name, template, region, profile, dry_run, stack_status, tag_value, is_windows):
     if not stack_status:
         console.print(f"[red]❌ Stack '{stack_name}' does not exist. Cannot update.[/red]")
         return 1
@@ -162,10 +443,14 @@ def update_stack_flow(ctx, stack_name, template, region, profile, dry_run, stack
     cmd = [
         "aws", "cloudformation", "update-stack",
         "--stack-name", stack_name,
-        "--template-body", f"file://{template}",
-        "--capabilities", "CAPABILITY_NAMED_IAM",
-        "--parameters"
-    ] + parameters
+        "--capabilities", "CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND",
+    ]
+    if parameters:
+        cmd += ["--parameters"] + parameters
+    if template.startswith("https://"):
+        cmd += ["--template-url", template]
+    else:
+        cmd += ["--template-body", f"file://{template}"]
 
     if tag_value:
         cmd += ["--tags", f"Key=wri:project,Value={tag_value}"]
@@ -204,10 +489,20 @@ def update_stack_flow(ctx, stack_name, template, region, profile, dry_run, stack
     try:
         subprocess.check_call(wait_cmd)
         console.print(f"[green]✅ Stack '{stack_name}' updated successfully![/green]")
-        _, instance_id, _ = get_stack_info(stack_name, region, profile)
+        with console.status("Loading stack info..."):
+            _, instance_id, _ = get_stack_info(stack_name, region, profile)
         password_was_provided = 'ubuntu_password' in ctx.params and ctx.params['ubuntu_password'] is not None
-        _, instance_id, key_name = get_stack_info(stack_name, region, profile)
-        display_instance_info(instance_id, key_name, region, profile, is_new_stack=False, password_set=password_was_provided)
+        with console.status("Loading stack info..."):
+            _, instance_id, key_name = get_stack_info(stack_name, region, profile)
+        display_instance_info(
+            instance_id,
+            key_name,
+            region,
+            profile,
+            is_new_stack=False,
+            password_set=password_was_provided,
+            is_windows=is_windows,
+        )
     except subprocess.CalledProcessError as e:
         console.print(f"[red]❌ Stack update failed or timed out: {e}[/red]")
         return 1
@@ -237,9 +532,125 @@ def get_security_groups_for_vpc(vpc_id, region=None, profile=None):
     return json.loads(security_groups_raw)
 
 
+def create_vpc_with_public_subnet(
+    vpc_cidr,
+    subnet_cidr,
+    subnet_az,
+    vpc_name,
+    name_prefix,
+    region=None,
+    profile=None,
+):
+    vpc_raw = run_aws(
+        ["ec2", "create-vpc", "--cidr-block", vpc_cidr, "--output", "json"],
+        region,
+        profile,
+    )
+    vpc_id = json.loads(vpc_raw)["Vpc"]["VpcId"]
+    vpc_tag = vpc_name or f"{name_prefix}-vpc"
+    run_aws(
+        ["ec2", "create-tags", "--resources", vpc_id, "--tags", f"Key=Name,Value={vpc_tag}"],
+        region,
+        profile,
+    )
+    run_aws(
+        [
+            "ec2",
+            "modify-vpc-attribute",
+            "--vpc-id",
+            vpc_id,
+            "--enable-dns-support",
+            json.dumps({"Value": True}),
+        ],
+        region,
+        profile,
+    )
+    run_aws(
+        [
+            "ec2",
+            "modify-vpc-attribute",
+            "--vpc-id",
+            vpc_id,
+            "--enable-dns-hostnames",
+            json.dumps({"Value": True}),
+        ],
+        region,
+        profile,
+    )
+
+    igw_raw = run_aws(["ec2", "create-internet-gateway", "--output", "json"], region, profile)
+    igw_id = json.loads(igw_raw)["InternetGateway"]["InternetGatewayId"]
+    run_aws(
+        ["ec2", "create-tags", "--resources", igw_id, "--tags", f"Key=Name,Value={name_prefix}-igw"],
+        region,
+        profile,
+    )
+    run_aws(
+        ["ec2", "attach-internet-gateway", "--internet-gateway-id", igw_id, "--vpc-id", vpc_id],
+        region,
+        profile,
+    )
+
+    rt_raw = run_aws(["ec2", "create-route-table", "--vpc-id", vpc_id, "--output", "json"], region, profile)
+    rt_id = json.loads(rt_raw)["RouteTable"]["RouteTableId"]
+    run_aws(
+        ["ec2", "create-tags", "--resources", rt_id, "--tags", f"Key=Name,Value={name_prefix}-public-rt"],
+        region,
+        profile,
+    )
+    run_aws(
+        [
+            "ec2",
+            "create-route",
+            "--route-table-id",
+            rt_id,
+            "--destination-cidr-block",
+            "0.0.0.0/0",
+            "--gateway-id",
+            igw_id,
+        ],
+        region,
+        profile,
+    )
+
+    subnet_cmd = ["ec2", "create-subnet", "--vpc-id", vpc_id, "--cidr-block", subnet_cidr, "--output", "json"]
+    if subnet_az:
+        subnet_cmd += ["--availability-zone", subnet_az]
+    subnet_raw = run_aws(subnet_cmd, region, profile)
+    subnet_id = json.loads(subnet_raw)["Subnet"]["SubnetId"]
+    run_aws(
+        ["ec2", "create-tags", "--resources", subnet_id, "--tags", f"Key=Name,Value={name_prefix}-public-subnet"],
+        region,
+        profile,
+    )
+    run_aws(
+        ["ec2", "modify-subnet-attribute", "--subnet-id", subnet_id, "--map-public-ip-on-launch"],
+        region,
+        profile,
+    )
+    run_aws(
+        ["ec2", "associate-route-table", "--subnet-id", subnet_id, "--route-table-id", rt_id],
+        region,
+        profile,
+    )
+
+    return vpc_id, subnet_id
+
+
 def parse_template_options(template_path):
-    if not os.path.exists(template_path):
-        return {}, {}, set()
+    lines = []
+    if template_path.startswith("https://"):
+        try:
+            with urllib.request.urlopen(template_path) as response:
+                content = response.read().decode("utf-8")
+        except Exception:
+            return {}, {}, set()
+        lines = content.splitlines()
+    else:
+        if not os.path.exists(template_path):
+            return {}, {}, set()
+        with open(template_path, "r", encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
 
     defaults = {}
     allowed = {}
@@ -248,8 +659,7 @@ def parse_template_options(template_path):
     in_allowed = False
     in_params = False
 
-    with open(template_path, "r", encoding="utf-8") as handle:
-        for line in handle:
+    for line in lines:
             if re.match(r"^Parameters:\s*$", line):
                 in_params = True
                 current = None
@@ -432,8 +842,16 @@ def get_public_cidr():
     return None
 
 
-def display_instance_info(instance_id, key_name, region=None, profile=None, is_new_stack=False, password_set=False,
-                          show_dcv=True):
+def display_instance_info(
+    instance_id,
+    key_name,
+    region=None,
+    profile=None,
+    is_new_stack=False,
+    password_set=False,
+    show_dcv=True,
+    is_windows=False,
+):
     """Display instance information including SSH and DCV connection details."""
     if not instance_id:
         console.print("[red]❌ Could not find DesktopInstance resource[/red]")
@@ -474,9 +892,6 @@ def display_instance_info(instance_id, key_name, region=None, profile=None, is_n
             if key_name:
                 console.print(f"[green]🔑 SSH Connection:[/green]")
                 console.print(f"   [dim]ssh -i ~/.ssh/{key_name}.pem ubuntu@{public_ip}[/dim]")
-            else:
-                console.print(f"[green]🔑 SSH Connection (replace KEY_NAME with your key):[/green]")
-                console.print(f"   [dim]ssh -i ~/.ssh/KEY_NAME.pem ubuntu@{public_ip}[/dim]")
 
             if show_dcv:
                 console.print(f"[green]🖥️  DCV Connection:[/green]")
@@ -484,10 +899,20 @@ def display_instance_info(instance_id, key_name, region=None, profile=None, is_n
 
                 if is_new_stack and not password_set:
                     console.print("")
+                    if is_windows:
+                        message = (
+                            "[yellow]⚠️  REMINDER: Set password for DCV login!\n"
+                            "Default username: Administrator\n"
+                            "Use SSM Session Manager or RDP to set it.[/yellow]"
+                        )
+                    else:
+                        message = (
+                            "[yellow]⚠️  REMINDER: Set password for DCV login!\n"
+                            "Default username: ubuntu\n"
+                            "Run: sudo passwd ubuntu[/yellow]"
+                        )
                     console.print(Panel.fit(
-                        "[yellow]⚠️  REMINDER: Set password for DCV login!\n"
-                        "Default username: ubuntu\n"
-                        "Run: sudo passwd ubuntu[/yellow]",
+                        message,
                         title="Password Required",
                         border_style="yellow"
                     ))
@@ -512,37 +937,54 @@ def confirm(prompt):
 @click.option("--stack-name-suffix", help="Stack name suffix (base: data-science-instance)")
 @click.option(
     "--template",
-    default="deep-learning-ubuntu-desktop.yaml",
+    default="https://raw.githubusercontent.com/wri/aws-deep-learning-ami-ubuntu-dcv-desktop/refs/heads/scripts/WIndowsServer-NICE-DCV.yaml",
     show_default=True,
-    help="Path to the CloudFormation template.",
+    help="Path or https:// URL to the CloudFormation template.",
 )
 @click.option("--region", help="AWS region (overrides AWS config).")
 @click.option("--profile", help="AWS CLI profile to use.")
 @click.option("--dry-run", is_flag=True, help="Print command only.")
-@click.option("--vpc-id", help="VPC ID (skip prompt).")
-@click.option("--subnet-id", help="Subnet ID (skip prompt).")
-@click.option("--key-name", help="EC2 key pair name (skip prompt).")
-@click.option("--s3-bucket", help="S3 bucket name (skip prompt).")
-@click.option("--desktop-access-cidr", help="Desktop access CIDR (skip prompt).")
-@click.option("--security-group-id", help="Security group ID (skip prompt).")
-@click.option("--ami-type", help="AMI type (AWSUbuntuAMIType, skip prompt).")
-@click.option("--instance-type", help="Instance type (DesktopInstanceType, skip prompt).")
-@click.option("--public-ip", help="Desktop has public IP (DesktopHasPublicIpAddress, skip prompt).")
-@click.option("--enable-efs", help="Enable EFS (EnableEFS, skip prompt).")
-@click.option("--desktop-flavor", help="Desktop package to install (DesktopFlavor, skip prompt).")
-@click.option("--ebs-size", help="EBS volume size in GB (EbsVolumeSize, skip prompt).")
+@click.option("--create-vpc", is_flag=True, help="Create a new VPC and public subnet.")
+@click.option("--vpc-cidr", default=None, help="CIDR block for a new VPC (with --create-vpc).")
+@click.option("--public-subnet-cidr", default=None, help="CIDR for a new public subnet (with --create-vpc).")
+@click.option("--subnet-az", default=None, help="Availability Zone for a new subnet (with --create-vpc).")
+@click.option("--vpc-id", help="VPC ID.")
+@click.option("--subnet-id", help="Subnet ID.")
+@click.option("--key-name", help="EC2 key pair name.")
+@click.option("--s3-bucket", help="S3 bucket name.")
+@click.option("--desktop-access-cidr", help="Desktop access CIDR (e.g. 1.2.3.4/32).")
+@click.option("--desktop-access-cidr-v6", help="Desktop access IPv6 CIDR (ingressIPv6).")
+@click.option("--security-group-id", help="Security group ID.")
+@click.option("--ami-type", help="AMI type (AWSUbuntuAMIType).")
+@click.option("--instance-type", help="Instance type (DesktopInstanceType).")
+@click.option("--public-ip", help="Desktop has public IP (DesktopHasPublicIpAddress).")
+@click.option("--assign-static-ip", help="Assign static public IP (assignStaticIP).")
+@click.option("--enable-efs", help="Enable EFS (EnableEFS).")
+@click.option("--desktop-flavor", help="Desktop package to install (DesktopFlavor).")
+@click.option("--ebs-size", help="EBS volume size in GB (EbsVolumeSize).")
 @click.option("--ubuntu-ami-override", help="Ubuntu AMI override (leave blank or omit to use default AMI).")
-@click.option("--userdata-script-url", help="User-data script URL override (UserdataScriptUrl, skip prompt).")
+@click.option("--userdata-script-url", help="User-data script URL override (UserdataScriptUrl).")
 @click.option("--debug", is_flag=True, help="Enable debug mode (Debug).")
 @click.option("--skip-desktop-install", is_flag=True, help="Skip installing desktop and DCV components.")
 @click.option("--slack-webhook-url", help="Slack webhook URL for completion notifications (optional).")
 @click.option("--user", help="Username for hostname generation (optional).")
 @click.option("--ubuntu-password", help="Password for ubuntu user (required for DCV login).")
 @click.option("--instance-role-name", help="Existing IAM role name to attach to the instance.")
+@click.option("--instance-profile-name", help="Existing IAM instance profile name to attach (Windows template).")
 @click.option("--ssh-public-key", help="SSH public key content or path to .pub file (Windows SSH).")
-@click.option("--allow-ssh-port", help="Allow inbound SSH (allowSSHport, skip prompt).")
+@click.option("--allow-ssh-port", help="Allow inbound SSH (allowSSHport).")
+@click.option("--allow-rdp-port", help="Allow inbound RDP (allowRDPport).")
+@click.option("--listen-port", help="DCV listen port (listenPort).")
+@click.option("--driver-type", help="Driver type (driverType).")
+@click.option("--tesla-driver-version", help="Tesla driver version (teslaDriverVersion).")
 @click.option("--project-tag", help="Override value for wri:project tag (defaults to stack-name-suffix).")
 @click.option("--update-stack", is_flag=True, help="Update an existing stack instead of creating a new one.")
+@click.option(
+    "--delete-rollback/--no-delete-rollback",
+    default=True,
+    show_default=True,
+    help="Delete stacks in ROLLBACK_COMPLETE before creating a new one.",
+)
 @click.pass_context
 def main(ctx, 
          stack_name_suffix, 
@@ -550,15 +992,21 @@ def main(ctx,
          region, 
          profile, 
          dry_run, 
+         create_vpc,
+         vpc_cidr,
+         public_subnet_cidr,
+         subnet_az,
          vpc_id, 
          subnet_id, 
          key_name, 
          s3_bucket, 
          desktop_access_cidr, 
+         desktop_access_cidr_v6,
          security_group_id, 
          ami_type, 
          instance_type, 
          public_ip, 
+         assign_static_ip,
          enable_efs, 
          desktop_flavor, 
          ebs_size, 
@@ -569,11 +1017,17 @@ def main(ctx,
          user, 
          ubuntu_password, 
          instance_role_name,
+         instance_profile_name,
          ssh_public_key,
          allow_ssh_port,
+         allow_rdp_port,
+         listen_port,
+         driver_type,
+         tesla_driver_version,
          project_tag,
          skip_desktop_install, 
-         update_stack
+         update_stack,
+         delete_rollback
          ):
     """
     🚀 **Interactive launcher for deep-learning-ubuntu-desktop CloudFormation stack.**
@@ -604,7 +1058,9 @@ def main(ctx,
     """
 
     # Build stack name
-    base_name = "data-science-instance"
+    base_name = "data-science-instance-linux"
+    if os.path.basename(template) == "WIndowsServer-NICE-DCV.yaml":
+        base_name = "data-science-instance-windows"
     
     if stack_name_suffix:
         # Use command line suffix
@@ -633,9 +1089,25 @@ def main(ctx,
         stack_name = base_name
         console.print(f"[cyan]Using stack name:[/cyan] {stack_name}")
 
-    if not os.path.exists(template):
+    is_template_url = template.startswith("https://")
+    if not is_template_url and not os.path.exists(template):
         console.print(f"[red]❌ Template not found:[/red] {template}")
         return 1
+    # Template validation disabled for now.
+    # if is_template_url:
+    #     console.print("[dim]Skipping template validation for URL-based templates.[/dim]")
+    # else:
+    #     with console.status("Validating CloudFormation template..."):
+    #         validate_cmd = ["aws", "cloudformation", "validate-template", "--template-body", f"file://{template}"]
+    #         if region:
+    #             validate_cmd += ["--region", region]
+    #         if profile:
+    #             validate_cmd += ["--profile", profile]
+    #         try:
+    #             subprocess.check_output(validate_cmd, stderr=subprocess.STDOUT, text=True)
+    #         except subprocess.CalledProcessError as exc:
+    #             console.print(f"[red]❌ Template validation failed:[/red] {exc.output.strip()}")
+    #             return 1
 
     if not region:
         try:
@@ -649,32 +1121,85 @@ def main(ctx,
         if not default_region:
             console.print("[red]❌ AWS region not set. Use --region or run 'aws configure'.[/red]")
             return 1
+        region = default_region
+
+    try:
+        template_url, template_path = resolve_template_source(template, region, profile)
+    except ValueError as exc:
+        console.print(f"[red]❌ {exc}[/red]")
+        return 1
+    template_source = template_url or template_path
+    is_template_url = bool(template_url)
+    if template_url and template_url != template:
+        console.print(f"[dim]Using uploaded template URL: {template_url}[/dim]")
+    template_basename = os.path.basename(
+        urlparse(template_source).path if template_source.startswith("https://") else template_source
+    )
+    is_windows_template = template_basename == "WIndowsServer-NICE-DCV.yaml"
 
     # Check if stack already exists
-    stack_status, instance_id, key_name_from_stack = get_stack_info(stack_name, region, profile)
+    with console.status("Loading stack info..."):
+        stack_status, instance_id, key_name_from_stack = get_stack_info(stack_name, region, profile)
 
     if update_stack:
         return update_stack_flow(
             ctx=ctx,
             stack_name=stack_name,
-            template=template,
+            template=template_source,
             region=region,
             profile=profile,
             dry_run=dry_run,
             stack_status=stack_status,
             tag_value=project_tag.strip() if project_tag else (stack_name_suffix.strip() if stack_name_suffix else ""),
+            is_windows=is_windows_template,
         )
+
+    if not stack_status:
+        console.print(f"[dim]No existing stack named '{stack_name}' found.[/dim]")
 
     if stack_status:
         console.print(f"[yellow]⚠️  Stack '{stack_name}' already exists with status: {stack_status}[/yellow]")
         if stack_status in ["CREATE_COMPLETE", "UPDATE_COMPLETE"]:
-            display_instance_info(instance_id, key_name_from_stack, region, profile, is_new_stack=False)
+            display_instance_info(
+                instance_id,
+                key_name_from_stack,
+                region,
+                profile,
+                is_new_stack=False,
+                is_windows=is_windows_template,
+            )
             return 0
-        console.print(f"[red]❌ Stack exists but is in state '{stack_status}'. Cannot proceed with creation.[/red]")
-        return 1
+        if stack_status == "ROLLBACK_COMPLETE" and delete_rollback:
+            console.print(f"[yellow]Deleting stack '{stack_name}' in ROLLBACK_COMPLETE...[/yellow]")
+            delete_cmd = ["aws", "cloudformation", "delete-stack", "--stack-name", stack_name]
+            if region:
+                delete_cmd += ["--region", region]
+            if profile:
+                delete_cmd += ["--profile", profile]
+            try:
+                subprocess.check_output(delete_cmd, stderr=subprocess.STDOUT, text=True)
+            except subprocess.CalledProcessError as exc:
+                console.print(f"[red]❌ Stack delete failed:[/red] {exc.output.strip()}")
+                return 1
+            wait_cmd = ["aws", "cloudformation", "wait", "stack-delete-complete", "--stack-name", stack_name]
+            if region:
+                wait_cmd += ["--region", region]
+            if profile:
+                wait_cmd += ["--profile", profile]
+            try:
+                subprocess.check_output(wait_cmd, stderr=subprocess.STDOUT, text=True)
+            except subprocess.CalledProcessError as exc:
+                console.print(f"[red]❌ Stack delete wait failed:[/red] {exc.output.strip()}")
+                return 1
+            console.print(f"[green]Deleted stack '{stack_name}'. Proceeding with create.[/green]")
+            stack_status = None
+        else:
+            console.print(f"[red]❌ Stack exists but is in state '{stack_status}'. Cannot proceed with creation.[/red]")
+            return 1
 
     # Parse template
-    defaults, allowed, param_names = parse_template_options(template)
+    parse_source = template_path or template_source
+    defaults, allowed, param_names = parse_template_options(parse_source)
     vpc_param = resolve_param_name(param_names, "DesktopVpcId", "vpcID")
     subnet_param = resolve_param_name(param_names, "DesktopVpcSubnetId", "subnetID")
     cidr_param = resolve_param_name(param_names, "DesktopAccessCIDR", "ingressIPv4")
@@ -684,9 +1209,15 @@ def main(ctx,
     ami_type_param = resolve_param_name(param_names, "AWSUbuntuAMIType")
     instance_type_param = resolve_param_name(param_names, "DesktopInstanceType", "instanceType")
     public_ip_param = resolve_param_name(param_names, "DesktopHasPublicIpAddress", "displayPublicIP")
+    assign_static_ip_param = resolve_param_name(param_names, "assignStaticIP")
     enable_efs_param = resolve_param_name(param_names, "EnableEFS")
     desktop_flavor_param = resolve_param_name(param_names, "DesktopFlavor")
     ebs_size_param = resolve_param_name(param_names, "EbsVolumeSize", "volumeSize")
+    listen_port_param = resolve_param_name(param_names, "listenPort")
+    driver_type_param = resolve_param_name(param_names, "driverType")
+    tesla_driver_param = resolve_param_name(param_names, "teslaDriverVersion")
+    rdp_param = resolve_param_name(param_names, "allowRDPport")
+    ipv6_param = resolve_param_name(param_names, "ingressIPv6")
     ubuntu_override_param = resolve_param_name(param_names, "UbuntuAMIOverride")
     userdata_param = resolve_param_name(param_names, "UserdataScriptUrl")
     debug_param = resolve_param_name(param_names, "Debug")
@@ -695,14 +1226,15 @@ def main(ctx,
     user_param = resolve_param_name(param_names, "User")
     ubuntu_password_param = resolve_param_name(param_names, "UbuntuPassword")
     instance_role_param = resolve_param_name(param_names, "InstanceRoleName")
+    instance_profile_param = resolve_param_name(param_names, "existingInstanceProfileName", "ExistingInstanceProfileName")
     project_tag_param = resolve_param_name(param_names, "ProjectTagValue")
     ssh_public_key_param = resolve_param_name(param_names, "sshPublicKey")
     allow_ssh_param = resolve_param_name(param_names, "allowSSHport")
     template_supports_ssh_key = ssh_public_key_param is not None
     required_values = []
     for param_name, value in [
-        (vpc_param, vpc_id),
-        (subnet_param, subnet_id),
+        (vpc_param, vpc_id if not create_vpc else "created"),
+        (subnet_param, subnet_id if not create_vpc else "created"),
         (cidr_param, desktop_access_cidr),
         (key_param, key_name),
         (s3_param, s3_bucket),
@@ -713,10 +1245,82 @@ def main(ctx,
 
     # Interactive prompts (only if not provided via command line)
     if vpc_param and not vpc_id:
-        vpcs, keypairs, buckets = get_aws_resources(region, profile)
-        vpc = select_from_list(vpcs, "VPCs", 
-            formatter=lambda v: f"{v.get('Id')}  {v.get('Cidr')}  {v.get('Name') or ''}".strip())
-        vpc_id = vpc if isinstance(vpc, str) else vpc.get("Id")
+        if create_vpc and (vpc_id or subnet_id):
+            console.print("[red]❌ --create-vpc cannot be used with --vpc-id or --subnet-id.[/red]")
+            return 1
+        if non_interactive and not create_vpc:
+            console.print("[red]❌ Missing --vpc-id (or use --create-vpc) in non-interactive mode.[/red]")
+            return 1
+        if not create_vpc and not non_interactive:
+            with console.status("Loading AWS resources (VPCs, key pairs, S3 buckets)..."):
+                vpcs, keypairs, buckets = get_aws_resources(region, profile)
+            choices = [
+                Choice(
+                    title=f"{vpc.get('Id')}  {vpc.get('Cidr')}  {vpc.get('Name') or ''}".strip(),
+                    value=vpc,
+                )
+                for vpc in vpcs
+            ]
+            choices.append(Choice(title="Create new VPC and public subnet", value="__create_vpc__"))
+            selection = questionary.select("Select VPC", choices=choices, use_shortcuts=True).ask()
+            if selection is None:
+                console.print("[red]Cancelled.[/red]")
+                return 1
+            if selection == "__create_vpc__":
+                create_vpc = True
+            else:
+                vpc_id = selection.get("Id")
+        if create_vpc:
+            if not vpc_cidr:
+                vpc_cidr = "10.0.0.0/16" if non_interactive else questionary.text(
+                    "New VPC CIDR", default="10.0.0.0/16"
+                ).ask()
+            if vpc_cidr is None:
+                console.print("[red]Cancelled.[/red]")
+                return 1
+            vpc_name_default = "data-science-instance-vpc"
+            if non_interactive:
+                vpc_name = vpc_name_default
+            else:
+                vpc_name = questionary.text(
+                    "VPC name (optional)", default=vpc_name_default
+                ).ask()
+                if vpc_name is None:
+                    console.print("[red]Cancelled.[/red]")
+                    return 1
+                vpc_name = vpc_name.strip() or vpc_name_default
+            if not public_subnet_cidr:
+                public_subnet_cidr = "10.0.1.0/24" if non_interactive else questionary.text(
+                    "New public subnet CIDR", default="10.0.1.0/24"
+                ).ask()
+            if public_subnet_cidr is None:
+                console.print("[red]Cancelled.[/red]")
+                return 1
+            if subnet_az is None and not non_interactive:
+                subnet_az = questionary.text("New subnet AZ (optional)", default="").ask()
+                if subnet_az is None:
+                    console.print("[red]Cancelled.[/red]")
+                    return 1
+            subnet_az = (subnet_az or "").strip()
+            vpc_id, subnet_id = create_vpc_with_public_subnet(
+                vpc_cidr=vpc_cidr.strip(),
+                subnet_cidr=public_subnet_cidr.strip(),
+                subnet_az=subnet_az,
+                vpc_name=vpc_name,
+                name_prefix=stack_name,
+                region=region,
+                profile=profile,
+            )
+        elif not vpc_id:
+            if "vpcs" not in locals():
+                with console.status("Loading AWS resources (VPCs, key pairs, S3 buckets)..."):
+                    vpcs, keypairs, buckets = get_aws_resources(region, profile)
+            vpc = select_from_list(
+                vpcs,
+                "VPCs",
+                formatter=lambda v: f"{v.get('Id')}  {v.get('Cidr')}  {v.get('Name') or ''}".strip(),
+            )
+            vpc_id = vpc if isinstance(vpc, str) else vpc.get("Id")
 
     if subnet_param and not subnet_id:
         subnets = get_subnets_for_vpc(vpc_id, region, profile)
@@ -726,12 +1330,14 @@ def main(ctx,
 
     if key_param and not key_name:
         if 'keypairs' not in locals():
-            _, keypairs, _ = get_aws_resources(region, profile)
+            with console.status("Loading AWS resources (VPCs, key pairs, S3 buckets)..."):
+                _, keypairs, buckets = get_aws_resources(region, profile)
         key_name = select_from_list(keypairs, "EC2 key pairs")
         
     if s3_param and not s3_bucket:
         if 'buckets' not in locals():
-            _, _, buckets = get_aws_resources(region, profile)
+            with console.status("Loading AWS resources (VPCs, key pairs, S3 buckets)..."):
+                vpcs, keypairs, buckets = get_aws_resources(region, profile)
         s3_bucket = select_from_list(buckets, "S3 buckets")
 
     if security_group_param and not security_group_id:
@@ -749,6 +1355,8 @@ def main(ctx,
             cidr = desktop_access_cidr.strip()
         else:
             default_cidr = get_public_cidr()
+            if defaults.get(cidr_param, "") == "0.0.0.0/0":
+                default_cidr = default_cidr or ""
             while True:
                 cidr = questionary.text("Desktop access CIDR (e.g. 1.2.3.4/32)", default=default_cidr or "").ask()
                 if cidr is None:
@@ -756,18 +1364,18 @@ def main(ctx,
                     return 1
                 if cidr.strip():
                     cidr = cidr.strip()
+                    if cidr == "0.0.0.0/0":
+                        console.print("[red]❌ Desktop access CIDR cannot be 0.0.0.0/0.[/red]")
+                        continue
                     break
+
+    cidr_v6 = None
+    if ipv6_param and desktop_access_cidr_v6:
+        cidr_v6 = desktop_access_cidr_v6.strip()
 
     install_desktop = None
     if "InstallDesktop" in param_names:
         install_desktop = "false" if skip_desktop_install else defaults.get("InstallDesktop", "true")
-
-    ssh_public_key_value = ""
-    if template_supports_ssh_key:
-        if ssh_public_key:
-            ssh_public_key_value = resolve_ssh_public_key(ssh_public_key)
-        elif not non_interactive:
-            ssh_public_key_value = prompt_ssh_public_key()
 
     # Optional parameters
     if ami_type_param and not ami_type:
@@ -779,6 +1387,9 @@ def main(ctx,
     if public_ip_param and not public_ip:
         public_ip = prompt_optional_choice(f"Desktop has public IP ({public_ip_param})", 
             allowed.get(public_ip_param), defaults.get(public_ip_param))
+    if assign_static_ip_param and not assign_static_ip:
+        assign_static_ip = prompt_optional_choice(f"Assign static IP ({assign_static_ip_param})",
+            allowed.get(assign_static_ip_param), defaults.get(assign_static_ip_param))
     if enable_efs_param and not enable_efs:
         enable_efs = prompt_optional_choice(f"Enable EFS ({enable_efs_param})", 
             allowed.get(enable_efs_param), defaults.get(enable_efs_param))
@@ -788,16 +1399,52 @@ def main(ctx,
                 allowed.get(desktop_flavor_param), defaults.get(desktop_flavor_param, "xfce4"))
         else:
             desktop_flavor = defaults.get(desktop_flavor_param, "xfce4")
+    if driver_type_param and not driver_type:
+        driver_type = prompt_optional_choice(f"Driver type ({driver_type_param})",
+            allowed.get(driver_type_param), defaults.get(driver_type_param))
+    if listen_port_param and not listen_port:
+        default_listen = str(defaults.get(listen_port_param, "8443"))
+        listen_port = questionary.text(f"DCV listen port ({listen_port_param})", default=default_listen).ask()
+        if listen_port is None:
+            console.print("[red]Cancelled.[/red]")
+            return 1
+        listen_port = listen_port.strip() or default_listen
+    if tesla_driver_param and not tesla_driver_version and driver_type == "NVIDIA-Tesla":
+        default_tesla = str(defaults.get(tesla_driver_param, ""))
+        if non_interactive:
+            tesla_driver_version = default_tesla
+        else:
+            tesla_driver_version = questionary.text(f"Tesla driver version ({tesla_driver_param})", default=default_tesla).ask()
+            if tesla_driver_version is None:
+                console.print("[red]Cancelled.[/red]")
+                return 1
+            tesla_driver_version = tesla_driver_version.strip() or default_tesla
 
     allow_ssh_value = allow_ssh_port
-    if allow_ssh_param and not allow_ssh_value and ssh_public_key_value and non_interactive:
-        allow_ssh_value = "Yes"
     if allow_ssh_param and not allow_ssh_value:
         default_allow_ssh = defaults.get(allow_ssh_param)
-        if ssh_public_key_value and default_allow_ssh == "No":
+        if ssh_public_key and default_allow_ssh == "No":
             default_allow_ssh = "Yes"
-        allow_ssh_value = prompt_optional_choice(f"Allow SSH inbound ({allow_ssh_param})",
-            allowed.get(allow_ssh_param), default_allow_ssh)
+        if non_interactive:
+            allow_ssh_value = default_allow_ssh
+        else:
+            allow_ssh_value = prompt_optional_choice(
+                f"Allow SSH inbound ({allow_ssh_param})",
+                allowed.get(allow_ssh_param),
+                default_allow_ssh,
+            )
+
+    ssh_public_key_value = ""
+    if template_supports_ssh_key:
+        if ssh_public_key:
+            ssh_public_key_value = resolve_ssh_public_key(ssh_public_key)
+        elif allow_ssh_value == "Yes" and not non_interactive:
+            ssh_public_key_value = prompt_ssh_public_key()
+
+    allow_rdp_value = allow_rdp_port
+    if rdp_param and not allow_rdp_value:
+        allow_rdp_value = prompt_optional_choice(f"Allow RDP inbound ({rdp_param})",
+            allowed.get(rdp_param), defaults.get(rdp_param))
 
     ebs_value = None
     if ebs_size_param:
@@ -849,6 +1496,8 @@ def main(ctx,
     add_parameter(vpc_param, vpc_id)
     add_parameter(subnet_param, subnet_id)
     add_parameter(cidr_param, cidr)
+    if cidr_v6:
+        add_parameter(ipv6_param, cidr_v6)
     add_parameter(key_param, key_name)
     add_parameter(ubuntu_override_param, ubuntu_override, allow_empty=True)
     add_parameter(userdata_param, userdata_script_value, allow_empty=True)
@@ -863,9 +1512,15 @@ def main(ctx,
     add_parameter(user_param, user or "")
     add_parameter(ubuntu_password_param, ubuntu_password or "")
     add_parameter(instance_role_param, instance_role_name or "")
+    add_parameter(instance_profile_param, instance_profile_name or "")
     add_parameter(project_tag_param, project_tag or "")
     add_parameter(ssh_public_key_param, ssh_public_key_value)
     add_parameter(allow_ssh_param, allow_ssh_value)
+    add_parameter(rdp_param, allow_rdp_value)
+    add_parameter(listen_port_param, listen_port)
+    add_parameter(driver_type_param, driver_type)
+    add_parameter(tesla_driver_param, tesla_driver_version)
+    add_parameter(assign_static_ip_param, assign_static_ip)
 
     # Add optional parameters
     for param_key, param_value in [
@@ -880,10 +1535,14 @@ def main(ctx,
     cmd = [
         "aws", "cloudformation", "create-stack",
         "--stack-name", stack_name,
-        "--template-body", f"file://{template}",
-        "--capabilities", "CAPABILITY_NAMED_IAM",
-        "--parameters"
-    ] + parameters
+        "--capabilities", "CAPABILITY_NAMED_IAM", "CAPABILITY_AUTO_EXPAND",
+    ]
+    if parameters:
+        cmd += ["--parameters"] + parameters
+    if is_template_url:
+        cmd += ["--template-url", template_source]
+    else:
+        cmd += ["--template-body", f"file://{template_source}"]
 
     if project_tag or stack_name_suffix:
         tag_value = project_tag.strip() if project_tag else stack_name_suffix.strip()
@@ -919,7 +1578,8 @@ def main(ctx,
         console.print(f"[green]✅ Stack '{stack_name}' created successfully![/green]")
         
         # Get final stack info and display
-        _, instance_id, _ = get_stack_info(stack_name, region, profile)
+        with console.status("Loading stack info..."):
+            _, instance_id, _ = get_stack_info(stack_name, region, profile)
         password_was_provided = 'ubuntu_password' in ctx.params and ctx.params['ubuntu_password'] is not None
         display_instance_info(
             instance_id,
@@ -929,6 +1589,7 @@ def main(ctx,
             is_new_stack=True,
             password_set=password_was_provided,
             show_dcv=install_desktop == "true" if install_desktop is not None else True,
+            is_windows=is_windows_template,
         )
             
     except subprocess.CalledProcessError as e:

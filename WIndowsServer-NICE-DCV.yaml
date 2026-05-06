@@ -29,6 +29,7 @@ Metadata:
           - imageId
           - instanceType
           - ec2TerminationProtection
+          - existingInstanceProfileName
       - Label:
           default: DCV
         Parameters:
@@ -46,7 +47,6 @@ Metadata:
           default: Remote access
         Parameters:
           - ingressIPv4
-          - ingressIPv6
           - allowRDPport
           - allowSSHport
           - sshPublicKey
@@ -87,6 +87,8 @@ Metadata:
         default: "Instance type (x86_64)"
       ec2TerminationProtection:
         default: "Enable EC2 termination protection to prevent accidental deletion"
+      existingInstanceProfileName:
+        default: "Existing IAM instance profile name (optional)"
 
       driverType:
         default: "Graphics driver to install"
@@ -106,8 +108,6 @@ Metadata:
 
       ingressIPv4:
         default: "Allowed source prefix (IPv4)"
-      ingressIPv6:
-        default: "Allowed source prefix (IPv6)"
       allowRDPport:
         default: "Allow remote desktop inbound"
       allowSSHport:
@@ -167,6 +167,10 @@ Parameters:
     AllowedValues:
       - "Yes"
       - "No"
+  existingInstanceProfileName:
+    Type: String
+    Description: Existing IAM instance profile name to attach (optional)
+    Default: ""
 
   driverType:
     Description: https://docs.aws.amazon.com/dcv/latest/adminguide/setting-up-installing-winprereq.html#setting-up-installing-general https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/install-nvidia-driver.html
@@ -224,12 +228,6 @@ Parameters:
     AllowedPattern: "^\\d+\\.\\d+\\.\\d+\\.\\d+\\/\\d+$"
     ConstraintDescription: Specify valid IPv4 prefix
     Default: 0.0.0.0/0
-  ingressIPv6:
-    Type: String
-    Description: e.g. 1:2:3:4::/64, get your internet IPv6 address (if any) with tools such as https://ifconfig.co
-    AllowedPattern: .+
-    ConstraintDescription: Specify valid IPv6 prefix
-    Default: ::/0
   allowRDPport:
     Type: String
     Description: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/connect-rdp.html
@@ -685,6 +683,8 @@ Parameters:
 
 Conditions:
   displayPublicIP: !Equals [!Ref displayPublicIP, "Yes"]
+  useExistingInstanceProfile: !Not [!Equals [!Ref existingInstanceProfileName, ""]]
+  createNewInstanceProfile: !Not [!Condition useExistingInstanceProfile]
   useElasticIP:
     !And [!Condition displayPublicIP, !Equals [!Ref assignStaticIP, "Yes"]]
   enableProtection: !Equals [!Ref ec2TerminationProtection, "Yes"]
@@ -735,6 +735,7 @@ Conditions:
   createSgRDP: !Equals [!Ref allowRDPport, "Yes"]
   createSgSSH: !Equals [!Ref allowSSHport, "Yes"]
   createBackup: !Equals [!Ref enableBackup, "Yes"]
+  createBackupWithNewRole: !And [!Condition createBackup, !Condition createNewInstanceProfile]
 
   hasR53Zone: !Equals [!Ref enableR53acmeSupport, "Yes"]
 
@@ -856,6 +857,7 @@ Mappings:
 Resources:
   instanceIamRole:
     Type: AWS::IAM::Role
+    Condition: createNewInstanceProfile
     Properties:
       AssumeRolePolicyDocument:
         Statement:
@@ -928,6 +930,7 @@ Resources:
 
   instanceProfile:
     Type: AWS::IAM::InstanceProfile
+    Condition: createNewInstanceProfile
     Properties:
       Path: /
       Roles:
@@ -944,21 +947,11 @@ Resources:
           FromPort: !Ref listenPort
           ToPort: !Ref listenPort
           CidrIp: !Ref ingressIPv4
-        - Description: DCV (IPv6)
-          IpProtocol: tcp
-          FromPort: !Ref listenPort
-          ToPort: !Ref listenPort
-          CidrIpv6: !Ref ingressIPv6
         - Description: DCV QUIC (IPv4)
           IpProtocol: udp
           FromPort: !Ref listenPort
           ToPort: !Ref listenPort
           CidrIp: !Ref ingressIPv4
-        - Description: DCV QUIC (IPv6)
-          IpProtocol: udp
-          FromPort: !Ref listenPort
-          ToPort: !Ref listenPort
-          CidrIpv6: !Ref ingressIPv6
         - !If
           - createSgHTTP
           - Description: HTTP (IPv4)
@@ -1878,7 +1871,7 @@ Resources:
     Properties:
       ImageId: !Ref imageId
       InstanceType: !Ref instanceType
-      IamInstanceProfile: !Ref instanceProfile
+      IamInstanceProfile: !If [useExistingInstanceProfile, !Ref existingInstanceProfileName, !Ref instanceProfile]
       SubnetId: !Ref subnetID
       Monitoring: false
       DisableApiTermination: !If [enableProtection, true, false]
@@ -1957,7 +1950,7 @@ Resources:
 
   backupPlan:
     Type: AWS::Backup::BackupPlan
-    Condition: createBackup
+    Condition: createBackupWithNewRole
     Properties:
       BackupPlan:
         BackupPlanName: !Sub
@@ -1989,7 +1982,7 @@ Resources:
 
   backupVault:
     Type: AWS::Backup::BackupVault
-    Condition: createBackup
+    Condition: createBackupWithNewRole
     UpdateReplacePolicy: Delete
     Properties:
       BackupVaultName: !Sub
@@ -2008,7 +2001,7 @@ Resources:
 
   backupSelection:
     Type: AWS::Backup::BackupSelection
-    Condition: createBackup
+    Condition: createBackupWithNewRole
     Properties:
       BackupPlanId: !Ref backupPlan
       BackupSelection:
@@ -2025,7 +2018,7 @@ Resources:
 
   backupRestoreRole:
     Type: AWS::IAM::Role
-    Condition: createBackup
+    Condition: createBackupWithNewRole
     Properties:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -2205,6 +2198,7 @@ Outputs:
           ]
 
   EC2iamRole:
+    Condition: createNewInstanceProfile
     Description: EC2 IAM role
     Value: !Sub
       - "https://${url}/iam/home#/roles/details/${role}"
@@ -2260,6 +2254,7 @@ Outputs:
       Name: !Sub ${AWS::StackName}-InstanceID
 
   IAMRole:
+    Condition: createNewInstanceProfile
     Description: IAM Role
     Value: !Ref instanceIamRole
     Export:

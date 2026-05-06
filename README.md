@@ -52,6 +52,94 @@ Create a CloudFormation stack using the [deep-learning-ubuntu-desktop.yaml](deep
 * [AWS Management Console](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cfn-console-create-stack.html), or
 * [AWS CLI](https://docs.aws.amazon.com/cli/latest/reference/cloudformation/create-stack.html)
 
+Example (Windows DCV template):
+```bash
+aws cloudformation create-stack \
+  --stack-name windows-dcv-desktop \
+  --template-body file://WIndowsServer-NICE-DCV.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameters \
+    ParameterKey=ec2Name,ParameterValue="Windows DCV Desktop" \
+    ParameterKey=instanceType,ParameterValue=t3.medium \
+    ParameterKey=vpcID,ParameterValue=vpc-xxxxxxxx \
+    ParameterKey=subnetID,ParameterValue=subnet-xxxxxxxx \
+    ParameterKey=ingressIPv4,ParameterValue=203.0.113.10/32
+```
+
+Example using `utils/launch-desktop.py` (interactive prompts):
+```bash
+uv run utils/launch-desktop.py --template WIndowsServer-NICE-DCV.yaml
+```
+
+Example using `utils/launch-desktop.py` to match the Windows DCV stack (non-interactive):
+```bash
+uv run utils/launch-desktop.py \
+  --template WIndowsServer-NICE-DCV.yaml \
+  --region us-west-2 \
+  --stack-name-suffix windows-stack-clone \
+  --vpc-id vpc-xxxxxxxx \
+  --subnet-id subnet-xxxxxxxx \
+  --desktop-access-cidr 203.0.113.10/32 \
+  --instance-type t3.medium \
+  --public-ip Yes \
+  --assign-static-ip Yes \
+  --driver-type DCV-IDD \
+  --listen-port 8443 \
+  --allow-rdp-port No \
+  --allow-ssh-port No
+```
+
+uv run utils/grant-cross-account-s3.py --bucket gfw2-data --bucket gfw-files --bucket wri-users --source-profile wri-admin --target-profile land-admin --region us-west-2 --role-arn arn:aws:iam::058755926933:role/data-science-desktop-role --access read-write --sid AllowEc2CrossAccountS3Access --policy-name CrossAccountS3Access
+
+./launch-desktop.py \
+  --template ../WIndowsServer-NICE-DCV.yaml \
+  --region us-east-1 \
+  --stack-name-suffix lucia \
+  --instance-type c7a.xlarge \
+  --public-ip Yes \
+  --assign-static-ip Yes \
+  --driver-type DCV-IDD \
+  --listen-port 8443 \
+  --allow-rdp-port No \
+  --allow-ssh-port No \
+  --vpc-id vpc-0eb7223116383f167 \
+  --subnet-id subnet-05018eeb01bcd616e \
+  --ebs-size 100 \
+
+  ./launch-desktop.py \
+  --template ../WIndowsServer-NICE-DCV.yaml \
+  --region us-east-1 \
+  --stack-name-suffix lucia \
+  --instance-type c7a.xlarge \
+  --public-ip Yes \
+  --assign-static-ip Yes \
+  --driver-type DCV-IDD \
+  --listen-port 8443 \
+  --allow-rdp-port No \
+  --allow-ssh-port No \
+  --vpc-id vpc-0eb7223116383f167 \
+  --subnet-id subnet-05018eeb01bcd616e \
+  --ebs-size 100 \
+  --instance-profile-name data-science-desktop-role
+  
+
+--key-name
+--security-group-id
+--ami-type
+--enable-efs
+--desktop-flavor
+--tesla-driver-version
+--ssh-public-key
+
+
+
+aws ssm start-session \
+  --region us-west-2 \
+  --target i-0e43431d1d3e6283f \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters '{"portNumber":["8443"],"localPortNumber":["8443"]}'
+
+
 See [CloudFormation Parameters](#desktop-cloudformation-template-parameters) for template inputs and [Stack Outputs](#desktop-cloudformation-stack-outputs) for outputs.
 
 **Important:** The template creates [IAM](https://aws.amazon.com/iam/) resources:
@@ -79,6 +167,14 @@ See [CloudFormation Parameters](#desktop-cloudformation-template-parameters) for
 2. Login to the desktop as user `ubuntu`
 3. **Do not upgrade the OS version** when prompted on first login
 4. Configure **Software Updater** to only apply security updates automatically (avoid non-security updates unless you're an advanced user)
+
+**Example: Session Manager tunnel for DCV**
+```bash
+aws ssm start-session \
+  --target i-0123456789abcdef0 \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters '{"portNumber":["8443"],"localPortNumber":["8443"]}'
+```
 
 ## Using the Desktop
 
