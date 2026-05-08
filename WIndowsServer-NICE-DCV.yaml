@@ -998,7 +998,7 @@ Resources:
             IpProtocol: tcp
             FromPort: 3389
             ToPort: 3389
-            CidrIpv6: !Ref ingressIPv6
+            CidrIpv6: "::/0"
           - !Ref AWS::NoValue
         - !If
           - createSgSSH
@@ -1014,7 +1014,7 @@ Resources:
             IpProtocol: tcp
             FromPort: 22
             ToPort: 22
-            CidrIpv6: !Ref ingressIPv6
+            CidrIpv6: "::/0"
           - !Ref AWS::NoValue
       SecurityGroupEgress:
         - Description: Allow all outbound traffic (IPv4)
