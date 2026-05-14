@@ -1400,8 +1400,17 @@ def main(ctx,
         else:
             desktop_flavor = defaults.get(desktop_flavor_param, "xfce4")
     if driver_type_param and not driver_type:
+        # Suggest the correct driver based on instance family so users don't accidentally
+        # get DCV-IDD (software-only) on a GPU instance, which causes poor 3D performance.
+        gpu_default = defaults.get(driver_type_param)
+        if instance_type:
+            family = instance_type.split(".")[0].lower()
+            if family in ("g4dn", "g5", "g6", "g3", "p3", "p4", "p5"):
+                gpu_default = "NVIDIA-GRID"
+            elif family in ("g4ad",):
+                gpu_default = "AMD"
         driver_type = prompt_optional_choice(f"Driver type ({driver_type_param})",
-            allowed.get(driver_type_param), defaults.get(driver_type_param))
+            allowed.get(driver_type_param), gpu_default)
     if listen_port_param and not listen_port:
         default_listen = str(defaults.get(listen_port_param, "8443"))
         listen_port = questionary.text(f"DCV listen port ({listen_port_param})", default=default_listen).ask()
