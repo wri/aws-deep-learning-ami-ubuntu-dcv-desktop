@@ -8,6 +8,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -352,11 +353,11 @@ def get_aws_resources(region=None, profile=None):
     # Get VPCs
     vpcs_raw = run_aws([
         "ec2", "describe-vpcs",
-        "--query", "Vpcs[].{Id:VpcId,Cidr:CidrBlock,Name:Tags[?Key=='Name']|[0].Value}",
+        "--query", "Vpcs[].{Id:VpcId,Cidr:CidrBlock,Default:IsDefault,Name:Tags[?Key=='Name']|[0].Value}",
         "--output", "json"
     ], region, profile)
     vpcs = json.loads(vpcs_raw)
-    
+
     # Get key pairs
     keys_raw = run_aws([
         "ec2", "describe-key-pairs",
@@ -379,7 +380,7 @@ def get_aws_resources(region=None, profile=None):
 def get_vpcs(region=None, profile=None):
     vpcs_raw = run_aws([
         "ec2", "describe-vpcs",
-        "--query", "Vpcs[].{Id:VpcId,Cidr:CidrBlock,Name:Tags[?Key=='Name']|[0].Value}",
+        "--query", "Vpcs[].{Id:VpcId,Cidr:CidrBlock,Default:IsDefault,Name:Tags[?Key=='Name']|[0].Value}",
         "--output", "json"
     ], region, profile)
     return json.loads(vpcs_raw)
@@ -461,7 +462,7 @@ def update_stack_flow(ctx, stack_name, template, region, profile, dry_run, stack
         cmd += ["--profile", profile]
 
     console.print("\n[bold cyan]CloudFormation command:[/bold cyan]")
-    console.print(" ".join(cmd))
+    console.print(shlex.join(cmd))
 
     if dry_run:
         return 0
@@ -1042,12 +1043,12 @@ def main(ctx,
     
     **Quick Start:**
     ```bash
-    uv run ./scripts/launch-desktop.py --stack-name-suffix myname
+    uv run ./utils/launch-desktop.py --stack-name-suffix myname
     ```
-    
+
     **Non-interactive mode:**
     ```bash
-    uv run ./scripts/launch-desktop.py \\
+    uv run ./utils/launch-desktop.py \\
         --stack-name-suffix dev \\
         --vpc-id vpc-12345 \\
         --subnet-id subnet-67890 \\
@@ -1132,10 +1133,9 @@ def main(ctx,
     is_template_url = bool(template_url)
     if template_url and template_url != template:
         console.print(f"[dim]Using uploaded template URL: {template_url}[/dim]")
-    template_basename = os.path.basename(
-        urlparse(template_source).path if template_source.startswith("https://") else template_source
-    )
-    is_windows_template = template_basename == "WIndowsServer-NICE-DCV.yaml"
+    is_windows_template = os.path.basename(
+        urlparse(template).path if template.startswith("https://") else template
+    ) == "WIndowsServer-NICE-DCV.yaml"
 
     # Check if stack already exists
     with console.status("Loading stack info..."):
@@ -1256,7 +1256,7 @@ def main(ctx,
                 vpcs, keypairs, buckets = get_aws_resources(region, profile)
             choices = [
                 Choice(
-                    title=f"{vpc.get('Id')}  {vpc.get('Cidr')}  {vpc.get('Name') or ''}".strip(),
+                    title=f"{vpc.get('Name') or ('(default)' if vpc.get('Default') else '(unnamed)')}  {vpc.get('Id')}  {vpc.get('Cidr')}",
                     value=vpc,
                 )
                 for vpc in vpcs
@@ -1318,7 +1318,7 @@ def main(ctx,
             vpc = select_from_list(
                 vpcs,
                 "VPCs",
-                formatter=lambda v: f"{v.get('Id')}  {v.get('Cidr')}  {v.get('Name') or ''}".strip(),
+                formatter=lambda v: f"{v.get('Name') or ('(default)' if v.get('Default') else '(unnamed)')}  {v.get('Id')}  {v.get('Cidr')}",
             )
             vpc_id = vpc if isinstance(vpc, str) else vpc.get("Id")
 
@@ -1563,7 +1563,81 @@ def main(ctx,
         cmd += ["--profile", profile]
 
     console.print("\n[bold cyan]CloudFormation command:[/bold cyan]")
-    console.print(" ".join(cmd))
+    console.print(shlex.join(cmd))
+
+    rerun = ["uv", "run", "./utils/launch-desktop.py"]
+    if stack_name_suffix:
+        rerun += ["--stack-name-suffix", stack_name_suffix]
+    rerun += ["--template", template]
+    if region:
+        rerun += ["--region", region]
+    if profile:
+        rerun += ["--profile", profile]
+    if vpc_id:
+        rerun += ["--vpc-id", vpc_id]
+    if subnet_id:
+        rerun += ["--subnet-id", subnet_id]
+    if cidr:
+        rerun += ["--desktop-access-cidr", cidr]
+    if instance_type:
+        rerun += ["--instance-type", instance_type]
+    if public_ip:
+        rerun += ["--public-ip", public_ip]
+    if assign_static_ip:
+        rerun += ["--assign-static-ip", assign_static_ip]
+    if ebs_value:
+        rerun += ["--ebs-size", ebs_value]
+    if driver_type:
+        rerun += ["--driver-type", driver_type]
+    if listen_port:
+        rerun += ["--listen-port", listen_port]
+    if allow_ssh_value:
+        rerun += ["--allow-ssh-port", allow_ssh_value]
+    if ssh_public_key_value:
+        rerun += ["--ssh-public-key", ssh_public_key_value]
+    if allow_rdp_value:
+        rerun += ["--allow-rdp-port", allow_rdp_value]
+    if key_name:
+        rerun += ["--key-name", key_name]
+    if s3_bucket:
+        rerun += ["--s3-bucket", s3_bucket]
+    if ami_type:
+        rerun += ["--ami-type", ami_type]
+    if security_group_id:
+        rerun += ["--security-group-id", security_group_id]
+    if desktop_flavor:
+        rerun += ["--desktop-flavor", desktop_flavor]
+    if enable_efs:
+        rerun += ["--enable-efs", enable_efs]
+    if ubuntu_ami_override:
+        rerun += ["--ubuntu-ami-override", ubuntu_ami_override]
+    if userdata_script_url:
+        rerun += ["--userdata-script-url", userdata_script_url]
+    if slack_webhook_url:
+        rerun += ["--slack-webhook-url", slack_webhook_url]
+    if user:
+        rerun += ["--user", user]
+    if project_tag:
+        rerun += ["--project-tag", project_tag]
+    if instance_role_name:
+        rerun += ["--instance-role-name", instance_role_name]
+    if instance_profile_name:
+        rerun += ["--instance-profile-name", instance_profile_name]
+    if debug:
+        rerun += ["--debug"]
+    if skip_desktop_install:
+        rerun += ["--skip-desktop-install"]
+    rerun_parts = [" ".join(shlex.quote(a) for a in rerun[:3])]
+    i = 3
+    while i < len(rerun):
+        if i + 1 < len(rerun) and not rerun[i + 1].startswith("-"):
+            rerun_parts.append(f"{shlex.quote(rerun[i])} {shlex.quote(rerun[i + 1])}")
+            i += 2
+        else:
+            rerun_parts.append(shlex.quote(rerun[i]))
+            i += 1
+    console.print("\n[bold cyan]Re-run command:[/bold cyan]")
+    console.print(" \\\n    ".join(rerun_parts), highlight=False)
 
     if dry_run:
         return 0
